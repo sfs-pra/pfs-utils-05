@@ -1,0 +1,94 @@
+# Maintainer: sfs <sfslinux@gmail.com>
+# VCS (git) build variant of pfs-utils-cli.
+# Builds pfs-utils-cli from the upstream git repository instead of the
+# local working tree.
+#
+# Source repo: https://github.com/sfs-pra/pfs-utils-05
+# Usage:       makepkg -p PKGBUILD.git
+#
+# Differs from ./PKGBUILD only in source acquisition: the whole tree
+# (usr/, etc/, po/, tests/, ...) arrives via the git clone instead of
+# building in place from $startdir.
+# shellcheck shell=sh
+
+pkgname=pfs-utils-cli
+_gitname=pfs-utils-05
+_basever=2026.04
+pkgver=2026.04
+pkgrel=33
+pkgdesc='Scripts collection to create, merge, extract and load/unload pfs modules. Ver. 3 (git)'
+arch=('any')
+url='https://github.com/sfs-pra/pfs-utils-05'
+license=('GPL')
+depends=(
+    'bash'
+    'coreutils'
+    'findutils'
+    'file'
+    'gawk'
+    'grep'
+    'squashfs-tools'
+    'util-linux'
+)
+makedepends=(
+    'git'
+    'gettext'
+)
+optdepends=(
+    'erofs-utils: erofs format support'
+    'bats-core: test suite execution'
+    'sudo: pfsrun self-elevation for non-root users'
+    'systemd: chroot2pfs -c nspawn container mode'
+    'xorg-xhost: chroot2pfs -X access to X11 sessions'
+    'lsof: pfs lsblocked helper'
+    'shared-mime-info: pfsrun .pfs MIME registration'
+    'desktop-file-utils: pfsrun .desktop integration'
+)
+backup=('etc/pfs-utils.conf')
+conflicts=('pfs-utils-cli<2026.04')
+provides=('pfs-utils-cli')
+install=pfs-utils-cli.install
+source=("${_gitname}::git+https://github.com/sfs-pra/pfs-utils-05.git")
+sha256sums=('SKIP')
+
+pkgver() {
+    cd "$srcdir/$_gitname"
+    local _count _hash
+    _count="$(git rev-list --count HEAD 2>/dev/null || printf '0')"
+    _hash="$(git rev-parse --short HEAD 2>/dev/null || printf '0000000')"
+    printf '%s.r%s.g%s' "$_basever" "$_count" "$_hash"
+}
+
+build() {
+    cd "$srcdir/$_gitname"
+
+    if [ -d po ] && [ -f po/LINGUAS ]; then
+        local lang
+        for lang in $(cat po/LINGUAS); do
+            [ -f "po/${lang}.po" ] || continue
+            msgfmt "po/${lang}.po" -o "po/${lang}.mo"
+        done
+    fi
+}
+
+package() {
+    cd "$srcdir/$_gitname"
+
+    install -d "$pkgdir/usr"
+    cp -a usr/. "$pkgdir/usr/"
+
+    install -Dm644 etc/pfs-utils.conf "$pkgdir/etc/pfs-utils.conf"
+
+    if [ -d po ] && [ -f po/LINGUAS ]; then
+        local lang
+        for lang in $(cat po/LINGUAS); do
+            [ -f "po/${lang}.mo" ] || continue
+            install -Dm644 "po/${lang}.mo" \
+                "$pkgdir/usr/share/locale/${lang}/LC_MESSAGES/pfs-utils.mo"
+        done
+    fi
+
+    install -Dm755 usr/bin/pfs1 "$pkgdir/usr/bin/pfs-v4"
+    install -Dm755 usr/bin/pfsload-v4 "$pkgdir/usr/bin/pfsload-v4"
+    install -Dm755 usr/bin/pfsunload-v4 "$pkgdir/usr/bin/pfsunload-v4"
+}

@@ -51,7 +51,7 @@ case "${fstype}" in
     ;;
 esac
 
-# Prefer util-linux mount; fall back to busybox if present (legacy PRA envs)
+# Prefer util-linux mount; fall back to busybox if present (legacy envs)
 mount_bin="$(command -v mount 2>/dev/null)"
 if [ -z "${mount_bin}" ]; then
   mount_bin="$(command -v busybox 2>/dev/null)"

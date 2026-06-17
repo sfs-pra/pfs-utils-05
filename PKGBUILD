@@ -1,4 +1,4 @@
-# Maintainer: sfs
+# Maintainer: sfs <sfslinux@gmail.com>
 # shellcheck shell=sh
 
 pkgname=pfs-utils-cli

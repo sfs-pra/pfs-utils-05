@@ -1,0 +1,82 @@
+# Publishes the documentation to the repository's GitHub Wiki.
+#
+# Single source of truth: docs/*.dokuwiki. English pages are the default;
+# each has a Russian sibling (*.ru.dokuwiki). The workflow regenerates the
+# MediaWiki pages with docs/dokuwiki2mediawiki.py and mirrors them into the
+# wiki repo. Generated *.mediawiki files are build artifacts (git-ignored).
+#
+# Page mapping:
+#   pfs-utils.dokuwiki            -> Home
+#   pfs-utils.ru.dokuwiki         -> Home-ru
+#   aufs-alternatives.dokuwiki    -> aufs-alternatives
+#   aufs-alternatives.ru.dokuwiki -> aufs-alternatives-ru
+#
+# Prerequisites (one-time, manual):
+#   1. Settings -> Features -> enable "Wikis".
+#   2. Create the first wiki page in the web UI (any content). The wiki git
+#      repo (<repo>.wiki.git) does NOT exist until the first page is saved.
+name: Publish docs to Wiki
+
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - "docs/*.dokuwiki"
+      - "docs/dokuwiki2mediawiki.py"
+      - ".github/workflows/publish-wiki.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-wiki
+  cancel-in-progress: false
+
+jobs:
+  publish-wiki:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Generate MediaWiki pages from DokuWiki sources
+        run: |
+          python3 docs/dokuwiki2mediawiki.py --out-dir _wiki docs/*.dokuwiki
+
+      - name: Clone wiki repository
+        run: |
+          if ! git clone "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.wiki.git" wiki; then
+            echo "::error::Could not clone the wiki repo. Enable Wikis and create the first page in the web UI once."
+            exit 1
+          fi
+
+      - name: Sync generated pages into the wiki
+        run: |
+          shopt -s nullglob
+          for f in _wiki/*.mediawiki; do
+            base="$(basename "$f" .mediawiki)"
+            case "$base" in
+              pfs-utils)    page="Home" ;;
+              pfs-utils.ru) page="Home-ru" ;;
+              *.ru)         page="${base%.ru}-ru" ;;
+              *)            page="$base" ;;
+            esac
+            # Gollum treats Page.md and Page.mediawiki as duplicates; keep only ours.
+            find wiki -maxdepth 1 -type f -name "${page}.*" ! -name "${page}.mediawiki" -delete
+            cp "$f" "wiki/${page}.mediawiki"
+            echo "synced $f -> ${page}.mediawiki"
+          done
+
+      - name: Commit and push wiki changes
+        working-directory: wiki
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No wiki changes to publish."
+          else
+            git commit -m "docs: sync wiki from ${{ github.repository }}@${{ github.sha }}"
+            git push
+          fi
