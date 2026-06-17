@@ -1,0 +1,44 @@
+#!/bin/sh
+# Unmount file for PuppyRus ("Ext2", "Ext3", "Ext4", "SquashFS", "ISO", "EROFS")
+
+pfs_bin="$(command -v pfs 2>/dev/null)"
+[ -n "${pfs_bin}" ] || { echo "$(basename "$0"): pfs helper not found in PATH" >&2; exit 1; }
+# shellcheck source=/dev/null
+. "${pfs_bin}"
+
+#help
+HLP(){
+echo "Usage: $0 <file>"
+exit 1
+}
+case "$1" in
+    "" | -h | --help)  HLP ;;
+    *) if ! [ -f "$1" ] ; then
+    echo "$1 - file not found "
+    HLP  ; fi ;;
+esac
+
+allow_only_root
+
+[ -f "$1" ] && mntfile="$(realpath "$1")" || mntfile="$1"
+mntpoint=/mnt/$(echo "${mntfile}" | tr ' ' '_' | sed "s#^\.##g" | sed "s#/#+#g")
+status=0
+
+if [ -d "${mntpoint}" ]; then
+  busybox_bin="$(command -v busybox 2>/dev/null)"
+  if [ -z "${busybox_bin}" ]; then
+    echo "$(basename "$0"): busybox not found in PATH" >&2
+    exit 1
+  fi
+
+  sync
+  "${busybox_bin}" umount -d "${mntpoint}"
+  status=$?
+  rmdir "${mntpoint}" 2>/dev/null
+  [ ${status} -gt 0 ] && echo "Unmount \"${mntfile}\" failed!"
+  sync
+else
+  echo "$(basename "$0"): File \"${mntfile}\" is not mounted!"; status=1
+fi
+
+exit ${status}

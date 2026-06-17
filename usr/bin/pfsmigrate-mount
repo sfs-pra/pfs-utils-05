@@ -1,0 +1,96 @@
+#!/bin/sh
+
+PATH="/usr/bin:/usr/sbin:${PATH}"
+export PATH
+
+die() {
+    printf 'pfsmigrate-mount: %s\n' "$*" >&2
+    exit 1
+}
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+if [ -r "${SCRIPT_DIR}/pfs" ]; then
+    # shellcheck source=/dev/null
+    . "${SCRIPT_DIR}/pfs"
+elif command -v pfs >/dev/null 2>&1; then
+    # shellcheck source=/dev/null
+    . "$(command -v pfs)"
+else
+    die "cannot locate pfs helper library"
+fi
+
+usage() {
+    cat <<EOF
+pfsmigrate-mount - migrate legacy mount indexes into canonical legacy namespace
+
+Usage:
+    pfsmigrate-mount [--dry-run]
+
+Options:
+    --dry-run   show what would be copied, do not modify filesystem
+    -h, --help  show this help
+EOF
+    exit 0
+}
+
+DRY_RUN=""
+for arg in "$@"; do
+    case "$arg" in
+        -h|--help) usage ;;
+        --dry-run) DRY_RUN=1 ;;
+        *) die "unknown option: $arg" ;;
+    esac
+done
+
+SRC_ROOT="${PFSDIR_MOUNT_LEGACY:-/etc/packages/mount}"
+DST_ROOT="${PFSDIR_MOUNT_NEW:-/var/lib/pfs/mount}"
+
+[ -d "$SRC_ROOT" ] || {
+    printf 'pfsmigrate-mount: %s does not exist, nothing to do.\n' "$SRC_ROOT"
+    exit 0
+}
+
+if [ -z "$DRY_RUN" ]; then
+    mkdir -p "$DST_ROOT" || die "cannot create $DST_ROOT"
+fi
+
+copied=0
+skipped=0
+conflicts=0
+
+for src_dir in "$SRC_ROOT"/*; do
+    [ -d "$src_dir" ] || continue
+
+    submodule="${src_dir##*/}"
+    encoded_submodule="$(pfsdir_mount_component_encode "$submodule" 2>/dev/null || true)"
+    [ -n "$encoded_submodule" ] || die "invalid legacy submodule name: $submodule"
+
+    dst_dir="$DST_ROOT/legacy/$encoded_submodule"
+
+    if [ ! -e "$dst_dir" ]; then
+        if [ -n "$DRY_RUN" ]; then
+            printf 'would copy %s -> %s\n' "$src_dir" "$dst_dir"
+        else
+            mkdir -p "$dst_dir" || die "cannot create $dst_dir"
+            cp -a "$src_dir"/. "$dst_dir"/ || die "failed to copy $src_dir"
+            printf 'copied %s -> legacy:%s\n' "$submodule" "$encoded_submodule"
+        fi
+        copied=$((copied + 1))
+        continue
+    fi
+
+    if diff -qr "$src_dir" "$dst_dir" >/dev/null 2>&1; then
+        printf 'skip %s (already migrated)\n' "$submodule"
+        skipped=$((skipped + 1))
+        continue
+    fi
+
+    printf 'conflict legacy:%s destination exists with different content (%s)\n' "$encoded_submodule" "$dst_dir" >&2
+    conflicts=$((conflicts + 1))
+done
+
+printf '\nSummary: copied=%s skipped=%s conflicts=%s\n' "$copied" "$skipped" "$conflicts"
+[ -n "$DRY_RUN" ] && printf '(dry-run; no filesystem changes made)\n'
+
+[ "$conflicts" -eq 0 ]
+exit $?

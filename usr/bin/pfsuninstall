@@ -1,0 +1,76 @@
+#!/bin/sh
+#Uninstall packages
+# Ensure pfs-utils binaries are resolvable via which(1) when invoked from a
+# restricted PATH (e.g. systemd, GUI, sudo without --preserve-env).
+PATH="/usr/bin:/usr/sbin:${PATH}"
+export PATH
+. $(which pfs)
+
+pfsuninstall_index_files() {
+  if [ -n "${PFSUNINSTALL_INSTALL_ROOTS:-}" ]; then
+    printf '%s\n' "${PFSUNINSTALL_INSTALL_ROOTS}" | while read _r; do
+      [ -n "${_r}" ] || continue
+      find "${_r}/" -mindepth 2 -maxdepth 2 -type f -name 'pfs.files' 2>/dev/null
+    done
+  fi
+
+  pfsdir_install_roots | while read _r; do
+    [ -n "${_r}" ] || continue
+    find "${_r}/" -mindepth 2 -maxdepth 2 -type f -name 'pfs.files' 2>/dev/null
+  done
+
+  pfsdir_mount_iter_indexes | while IFS= read -r idx_line; do
+    idx_dir="$(printf '%s\n' "${idx_line}" | cut -f3)"
+    [ -n "${idx_dir}" ] || continue
+    [ -f "${idx_dir}/pfs.files" ] && printf '%s\n' "${idx_dir}/pfs.files"
+  done
+}
+
+if [ "${PFSUNINSTALL_SOURCE_ONLY:-0}" = "1" ]; then
+  return 0 2>/dev/null || exit 0
+fi
+
+#help
+HLP(){
+echo "Usage:" 
+echo "$0 <submodule>"
+exit 1
+}
+
+for arg in $@
+do
+  case "${arg}" in
+    "-h" | "--help")  HLP ;exit 1;;
+  esac
+done
+
+[ $1 ] || HLP
+
+allow_only_root
+package_name=$(basename ${1%.$EXT} )
+
+install_dir="$(pfsdir_install_find "$package_name" || echo "${PFSDIR}/install/$package_name")"
+fileslist="${install_dir}/pfs.files"
+if [ -f "${fileslist}" ]; then 
+  if [ -d "/tmp/.pfs/uninstall/$package_name" ]; then
+    echo "Process is already running!" >&2; exit 1    
+  fi
+  mkdir -p "/tmp/.pfs/uninstall/$package_name"
+  mv "${fileslist}" "/tmp/.pfs/uninstall/$package_name"
+  rm -rf "${PFSDIR_INSTALL_NEW}/$package_name/" "${PFSDIR_INSTALL_LEGACY}/$package_name/" 
+  finded="$(pfsuninstall_index_files | while read listfiles; do cat "${listfiles}" | sed -e 's:[\]:\\\\\\\\:g'; done)"
+  listfiles="$(cat "/tmp/.pfs/uninstall/$package_name/pfs.files" | sed -e 's:^[^/]*::' -e 's:[\]:\\\\:g')"
+  echo "${listfiles}" | while read file; do echo "${finded}" | grep -q -F "${file}" || rm -f "${file}" 2>/dev/null; done
+  echo "${listfiles}" | grep -q -F "/lib/modules" && depmod &
+  [ ! -z "$(which ldconfig)" ] && echo "${listfiles}" | grep -q -F "/lib" && ldconfig &
+  echo "${listfiles}" | grep -q -F "/usr/share/glib-2.0/schemas" && glib-compile-schemas /usr/share/glib-2.0/schemas/ &
+  rm -rf "/tmp/.pfs/uninstall/$package_name"
+else
+  [ "$(pfsinfo "$1")" = "$package_name" ] && { echo "Package \"$package_name\" is not installed!" >&2; exit 1 ; }
+  for i in $(pfsinfo "$1") ;do
+    pfsuninstall "$i.${EXT}"
+  done
+fi
+sync
+
+exit 0

@@ -1,0 +1,138 @@
+.TH AUFS\-N 8 "2026-05-06" "pfs-utils-cli" "PuppyRus PFS Module Tools"
+.SH NAME
+aufs\-n \- list AUFS layers of the running root filesystem
+.SH SYNOPSIS
+.B aufs\-n
+.br
+.B aufs\-n
+\fIN\fR
+.br
+.B aufs\-n
+.B \-\-raw
+[\fIFORMAT\fR]
+[\fB\-\-reverse\fR]
+[\fB\-\-hidetop\fR]
+.SH DESCRIPTION
+.B aufs\-n
+reads the AUFS branch list from
+.I /sys/fs/aufs/si_*/br*
+and displays information about each layer of the running root AUFS.
+.PP
+In human-readable mode (default) it prints a formatted table showing the layer
+number, bundle mount point, layer permissions, source path, and bundle
+permissions.
+.PP
+When a numeric argument
+.I N
+is given,
+.B aufs\-n
+prints only the mount point of layer
+.IR N .
+.PP
+In raw mode
+.RB ( \-\-raw )
+it prints one line per layer using a user-defined format string.
+This is the primary interface used by
+.BR pfsfind (8),
+.BR chroot2pfs (8),
+and other tools that need to enumerate layers programmatically.
+.SH OPTIONS
+.TP
+.B \-\-raw " " [\fIFORMAT\fR]
+Print raw output, one line per layer.
+.I FORMAT
+is a shell-style string that may reference the following variables:
+.RS
+.TP
+.B $n
+Layer number (zero-padded).
+.TP
+.B $bundle
+Bundle mount point.
+.TP
+.B $bname_bundle
+Basename of the bundle mount point.
+.TP
+.B $dname_bundle
+Directory part of the bundle mount point.
+.TP
+.B $source
+Source of the layer (module file, image, directory, or
+.BR tmpfs ).
+.TP
+.B $bname_source
+Basename of the source.
+.TP
+.B $dname_source
+Directory part of the source.
+.TP
+.B $layer_perm
+AUFS layer permissions
+.RB ( ro " or " rw ).
+.TP
+.B $bundle_perm
+Bundle mount permissions
+.RB ( ro " or " rw ).
+.RE
+.PP
+Default format when
+.B \-\-raw
+is given without a
+.I FORMAT
+argument:
+.RS
+.nf
+$n $bundle $layer_perm $source $bundle_perm
+.fi
+.RE
+.TP
+.B \-\-reverse
+List layers in reverse order (bottom to top).
+.TP
+.B \-\-hidetop
+Skip the topmost (rw) layer.
+Useful when enumerating read-only module layers.
+.SH EXAMPLES
+.PP
+Show all layers in human-readable format:
+.RS
+.nf
+aufs\-n
+.fi
+.RE
+.PP
+Get the mount point of layer 3:
+.RS
+.nf
+aufs\-n 3
+.fi
+.RE
+.PP
+List all bundle mount points:
+.RS
+.nf
+aufs\-n \-\-raw '$bundle'
+.fi
+.RE
+.PP
+List layers bottom-to-top, skipping the rw top layer:
+.RS
+.nf
+aufs\-n \-\-raw \-\-reverse \-\-hidetop '$bname_source $bundle'
+.fi
+.RE
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.SH FILES
+.TP
+.I /sys/fs/aufs/si_*/br*
+AUFS branch information read by this utility.
+.SH SEE ALSO
+.BR pfsfind (8),
+.BR pfsload (8),
+.BR pfsunload (8),
+.BR pfs\-utils (8)
+.SH AUTHORS
+PuppyRus pfs-utils maintainers.

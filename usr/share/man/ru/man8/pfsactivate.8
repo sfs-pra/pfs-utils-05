@@ -1,0 +1,169 @@
+.TH PFSACTIVATE 8 "2026-04" "pfs-utils-cli" "Утилиты PFS-модулей"
+.SH ИМЯ
+pfsactivate \- примонтировать PFS-модуль и подложить его файлы через symlinks
+.SH СИНТАКСИС
+.B pfsactivate
+.RB [ --persist
+.IR DIR ]
+.IR МОДУЛЬ.pfs
+.br
+.B pfsactivate
+.B --list
+.br
+.B pfsactivate
+.B --help
+.SH ОПИСАНИЕ
+.B pfsactivate
+монтирует
+.IR МОДУЛЬ.pfs
+loop'ом read-only под
+.I /run/pfs-utils/symlink-activations/<module>/mount
+и затем перебирает все обычные файлы внутри. Для каждого пути
+.I /<rel>
+существующий файл на хосте переименовывается в
+.IB \(.pfs.org. <basename>
+и заменяется symlink'ом, указывающим в примонтированный модуль.
+
+Это legacy-модель Porteus "Neko": работает на любой rootfs
+.RB ( aufs ", " overlay ", " ext4 )
+без поддержки ядром, но symlinks
+.B не
+прозрачны (видимы через
+.BR readlink (1)
+и проверки
+.BR st_dev ),
+и часть системно-критичных путей явно запрещена. На AUFS-root лучше
+использовать
+.BR pfsload (8)
+для системной kernel-level прозрачности. На OverlayFS-root используйте
+.BR pfsrun (8)
+для runtime-запуска;
+.BR pfsexec (8)
+остаётся низкоуровневым namespace-helper для этого потока.
+.PP
+.B pfsactivate
+помечен как
+.B EXPERIMENTAL
+во встроенной справке. Persistence в
+.I changes=
+режиме опасен: дезактивируйте до перезагрузки, иначе останутся битые
+symlinks между загрузками.
+.SH ОПЦИИ
+.TP
+.B --list
+Печатает по одной строке
+.IR модуль<TAB>число_файлов
+для каждого активированного модуля.
+.TP
+.BR --persist " " \fIDIR\fR
+Использовать
+.IR DIR
+как корень состояния вместо
+.IR /run .
+Каталог становится
+.IR DIR/pfs-utils/symlink-activations/<module>/ .
+.TP
+.BR -h ", " --help
+Вывести EXPERIMENTAL-предупреждение и краткую справку.
+.SH ЗАЩИЩЁННЫЕ ПУТИ
+Активатор отказывается трогать с кодом возврата
+.B 1 :
+.IR /etc/passwd ", " /etc/shadow ", " /etc/sudoers ", " /etc/fstab ", " /etc/group
+и всё под
+.IR /dev , /proc , /sys , /boot .
+Также отказывается перезаписывать каталог, существующий на хосте \(em
+заменяются только файлы (или уже существующие symlinks).
+.SH СОСТОЯНИЕ
+.TP
+.I /run/pfs-utils/symlink-activations/<module>/mount/
+read-only loop-маунт модуля.
+.TP
+.I /run/pfs-utils/symlink-activations/<module>/state
+список активированных путей, в порядке появления;
+.BR pfsdeactivate (8)
+откатывает их в обратном порядке.
+.TP
+.I /run/pfs-utils/symlink-activations/<module>/files.list
+эфемерный вывод
+.BR find (1)
+во время активации; удаляется при успехе.
+.TP
+.IB <parent_dir>/.pfs.org. <basename>
+backup исходного файла на хосте (если был), восстанавливается через
+.BR pfsdeactivate (8).
+.SH ПОВЕДЕНИЕ ПРИ ОШИБКЕ
+При любой ошибке посреди активации
+.B pfsactivate
+проходит
+.I state
+в обратном порядке, восстанавливает исходные файлы из
+.IB .pfs.org. *
+backups, снимает loop-маунт и удаляет каталог состояния. Очистка работает
+из
+.B EXIT
+trap'а, поэтому SIGINT/SIGTERM тоже приводят к консистентному откату.
+.SH ПРИВИЛЕГИИ
+Запуск только от root. При вызове обычным пользователем выходит с кодом
+.BR 7 .
+.SH ПОДДЕРЖИВАЕМЫЕ ФОРМАТЫ
+ФС модуля должна быть
+.BR squashfs " или " erofs
+(определяется через
+.B fs_type
+из
+.BR pfs (8) ).
+Прочее отклоняется с кодом
+.BR 3 .
+.SH КОДЫ ВОЗВРАТА
+.TP
+.B 0
+активация прошла успешно.
+.TP
+.B 1
+уже активирован, защищённый путь, конфликт backup, или режим help/list.
+.TP
+.B 2
+файл модуля не найден.
+.TP
+.B 3
+неподдерживаемая ФС модуля.
+.TP
+.B 4
+не удалось создать каталог состояния или примонтировать.
+.TP
+.B 5
+ошибка перечисления / создания symlink.
+.TP
+.B 7
+не root.
+.SH ПРИМЕРЫ
+.PP
+Активировать модуль:
+.RS
+.nf
+pfsactivate /modules/extras-2026.04-sf01.pfs
+.fi
+.RE
+.PP
+Список активированных:
+.RS
+.nf
+pfsactivate --list
+extras-2026.04-sf01    142
+mytools-1.0-sf02       19
+.fi
+.RE
+.PP
+Кастомный корень для тестов:
+.RS
+.nf
+pfsactivate --persist /tmp/pfs-test /modules/x.pfs
+.fi
+.RE
+.SH СМ. ТАКЖЕ
+.BR pfsdeactivate (8),
+.BR pfsexec (8),
+.BR pfsload (8),
+.BR pfsrun (8),
+.BR pfs-utils (8),
+.BR readlink (1)

@@ -1,0 +1,72 @@
+#!/bin/sh
+# Mount file  ("Ext2", "Ext3", "Ext4", "SquashFS", "ISO", "EROFS")
+
+pfs_bin="$(command -v pfs 2>/dev/null)"
+[ -n "${pfs_bin}" ] || { echo "$(basename "$0"): pfs helper not found in PATH" >&2; exit 1; }
+# shellcheck source=/dev/null
+. "${pfs_bin}"
+
+#help
+HLP(){
+echo "Usage: $0 <file>"
+echo OR
+echo "Usage: $0 <file> <mount point>"
+exit 1
+}
+
+case "$1" in
+    "" | -h | --help)  HLP ;;
+    *) if ! [ -f "$1" ] ; then
+    echo "$1 - file nofound "
+    HLP  ; fi ;;
+esac
+
+allow_only_root
+mntfile="$(realpath "$1")"
+
+if [ "$2" ]; then
+  mntpoint="$2"
+  [ -d "${mntpoint}" ] || mkdir -p "${mntpoint}"
+else
+  mntpoint=/mnt/$(echo "${mntfile}" | tr ' ' '_' | sed "s#^\.##g" | sed "s#/#+#g")
+  [ -d "${mntpoint}" ] && rmdir "${mntpoint}" 2>/dev/null
+  if [ -d "${mntpoint}" ]; then
+    echo "$(basename "$0"): File \"${mntfile}\" is mounted!" >&2; exit 1
+  else
+    mkdir -p "${mntpoint}"
+  fi
+fi
+
+fstype="$(fs_type "${mntfile}" 2>/dev/null || true)"
+case "${fstype}" in
+  erofs)
+    mount_fstype="erofs"
+    ;;
+  ""|unknown)
+    echo "Filesystem not supported!" >&2
+    exit 1
+    ;;
+  *)
+    mount_fstype="${fstype}"
+    ;;
+esac
+
+# Prefer util-linux mount; fall back to busybox if present (legacy PRA envs)
+mount_bin="$(command -v mount 2>/dev/null)"
+if [ -z "${mount_bin}" ]; then
+  mount_bin="$(command -v busybox 2>/dev/null)"
+  [ -n "${mount_bin}" ] && mount_bin="${mount_bin} mount"
+fi
+if [ -z "${mount_bin}" ]; then
+  echo "$(basename "$0"): neither mount nor busybox found in PATH" >&2
+  exit 1
+fi
+
+if [ "${mount_fstype}" = "" ]; then
+  echo "Filesystem not supported!" >&2; exit 1
+fi
+sync
+
+# shellcheck disable=SC2086
+${mount_bin} -t "${mount_fstype}" -o loop "${mntfile}" "${mntpoint}"
+exit $?

@@ -1,0 +1,124 @@
+.TH PFSUNLOAD 8 "2026-05-06" "pfs-utils-cli" "PuppyRus PFS Module Tools"
+.SH NAME
+pfsunload \- detach a .pfs module from a running AUFS root
+.SH SYNOPSIS
+.B pfsunload
+[\fIOPTIONS\fR]
+\fIFILESYSTEM\fR
+.SH DESCRIPTION
+.B pfsunload
+removes a previously loaded
+.B .pfs
+module from the running AUFS root filesystem.
+It reverses the operation performed by
+.BR pfsload (8):
+the module is removed from the AUFS layer stack, the loop device is released,
+and the mount point is cleaned up.
+.PP
+AUFS-only: system-wide hot attach/detach is not supported on OverlayFS roots;
+use
+.BR pfsrun (8)
+for OverlayFS runtime execution.
+.PP
+After a successful unload,
+.B pfsunload
+updates system caches and runs any
+.B runpfsunload*
+hook scripts found alongside the utility.
+.PP
+If the module was loaded into RAM with
+.BR pfsload\ \-r ,
+the RAM copy is freed unless
+.B \-\-saveram
+is given.
+.PP
+Whitespace in the module path is rejected with exit code 2.
+.SH OPTIONS
+.TP
+.BR \-n ", " \-\-no\-update
+Skip cache updates after unloading.
+.TP
+.BR \-s ", " \-\-saveram
+Do not free the RAM copy of the module after unloading.
+.TP
+.B \-v
+Verbose output: list open files from the module when unloading fails.
+.TP
+.BR \-h ", " \-\-help
+Print usage and exit.
+.SH ARGUMENTS
+.TP
+.I FILESYSTEM
+Path or name of the module to unload.
+Accepts the original file path, the basename, or the basename without the
+.B .pfs
+extension.
+.B pfsunload
+resolves the mount point automatically.
+.SH EXAMPLES
+.PP
+Unload a module by path:
+.RS
+.nf
+pfsunload /srv/modules/firefox.pfs
+.fi
+.RE
+.PP
+Unload by name only:
+.RS
+.nf
+pfsunload firefox.pfs
+.fi
+.RE
+.PP
+Unload without freeing the RAM copy:
+.RS
+.nf
+pfsunload \-s myapp.pfs
+.fi
+.RE
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 2
+Whitespace in module path.
+.TP
+.B 3
+Kernel does not support PFS.
+.TP
+.B 22
+Module is not currently mounted.
+.PP
+Other non-zero codes indicate AUFS or unmount errors.
+.SH ENVIRONMENT
+.TP
+.B PFS_LAYERING
+When set to
+.B aufs
+or
+.BR overlay ,
+overrides automatic layering detection. The overlay value does not make
+.B pfsunload
+perform system-wide OverlayFS hot detach; use
+.BR pfsrun (8)
+instead.
+.SH FILES
+.TP
+.I /mnt/.<basename>
+Primary mount point removed on unload.
+.TP
+.I /run/bundles/.<basename>
+Secondary bundle mount point, also cleaned up when present.
+.TP
+.I /run/pfs-utils/layer-map/<basename>.layer
+State file read to determine the correct layer path; removed on success.
+.SH SEE ALSO
+.BR pfsload (8),
+.BR pfsrun (8),
+.BR pfsinfo (8),
+.BR pfsunload\-v4 (8),
+.BR pfs\-utils (8)
+.SH AUTHORS
+PuppyRus pfs-utils maintainers.

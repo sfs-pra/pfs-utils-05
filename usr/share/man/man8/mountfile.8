@@ -1,0 +1,79 @@
+.TH MOUNTFILE 8 "2026-05-06" "pfs-utils-cli" "PuppyRus PFS Module Tools"
+.SH NAME
+mountfile \- mount a filesystem image file at a given mount point
+.SH SYNOPSIS
+.B mountfile
+\fIFILE\fR
+[\fIMOUNTPOINT\fR]
+.SH DESCRIPTION
+.B mountfile
+mounts a filesystem image
+.I FILE
+using the filesystem type detected from its magic bytes.
+Supported types include ext2, ext3, ext4, squashfs, ISO 9660, and erofs.
+.PP
+If
+.I MOUNTPOINT
+is not given,
+.B mountfile
+derives one automatically from the file path:
+.RS
+.nf
+/mnt/<path-with-slashes-replaced-by-plus>
+.fi
+.RE
+.PP
+The mount point is created if it does not exist.
+If the derived mount point already exists and is in use,
+.B mountfile
+exits with an error.
+.PP
+.B mountfile
+prefers
+.BR mount (8)
+from util-linux.
+On legacy PRA environments without util-linux,
+it falls back to
+.BR busybox (1)
+mount.
+.SH ARGUMENTS
+.TP
+.I FILE
+Path to the filesystem image to mount.
+.TP
+.I MOUNTPOINT
+Optional explicit mount point.
+Created if it does not exist.
+.SH EXAMPLES
+.PP
+Mount a squashfs module at an auto-derived path:
+.RS
+.nf
+mountfile /srv/modules/myapp.pfs
+.fi
+.RE
+.PP
+Mount at an explicit path:
+.RS
+.nf
+mountfile /srv/modules/myapp.pfs /mnt/myapp
+.fi
+.RE
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+File not found, filesystem type not supported, or
+.B mount
+not available.
+.PP
+Other codes propagate from
+.BR mount (8).
+.SH SEE ALSO
+.BR pfsload (8),
+.BR pfs\-utils (8),
+.BR mount (8)
+.SH AUTHORS
+PuppyRus pfs-utils maintainers.

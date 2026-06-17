@@ -1,0 +1,316 @@
+.TH PFSRUN 8 "2026-04" "pfs-utils-cli" "Утилиты PFS-модулей"
+.SH ИМЯ
+pfsrun \- удобный запуск приложений из PFS-модулей
+.SH СИНТАКСИС
+.B pfsrun
+[\fIОПЦИИ\fR] \fIМОДУЛЬ.pfs\fR [\fIКОМАНДА\fR [\fIАРГУМЕНТЫ\fR...]]
+.br
+.B pfsrun
+[\fIОПЦИИ\fR] \fB-m\fR \fIМОД1.pfs\fR [\fB-m\fR \fIМОД2.pfs\fR ...] [\fB--\fR \fIКОМАНДА\fR [\fIАРГУМЕНТЫ\fR...]]
+.SH ОПИСАНИЕ
+.B pfsrun
+\(em обёртка над
+.BR pfsexec (8)
+с разумными дефолтами, чтобы непривилегированный пользователь мог запустить
+GUI-приложение, лежащее внутри
+.B .pfs
+(squashfs / erofs) модуля, не помня про bind-маунты, дроп прав и проброс
+переменных окружения.
+
+При вызове без
+.BR sudo
+скрипт сам поднимается через
+.BR sudo (8),
+сохраняя переменные сессии. Внутри namespace права снова дропаются на
+вызывающего пользователя через
+.BR runuser (1):
+это самый простой способ удовлетворить проверку Mozilla
+"Running Firefox as root in a regular user's session is not supported"
+и аналогичные защиты других тулкитов.
+.SH ОПЦИИ
+.TP
+.BR -h ", " --help
+Показать встроенную справку с опциями и примерами.
+.TP
+.BR -m " " \fIМОДУЛЬ\fR
+Добавить ещё один модуль в overlay-стек. Можно повторять. Имя
+бинарника auto\-detect берёт из basename первого модуля.
+.TP
+.BR --bind " " \fIПУТЬ\fR
+Дополнительный bind-маунт внутрь namespace поверх GUI-дефолтов.
+Можно повторять.
+.TP
+.BR --exec " " \fIПУТЬ\fR
+Переопределить путь к главному бинарю (отключает auto-detect).
+.TP
+.B --shell
+Бросить пользователя в интерактивный shell внутри namespace. Если есть
+TTY \(em запускается
+.BR bash (1)
+с маркером
+.B (pfsrun)
+в PS1; если stdin это пайп/heredoc \(em используется неинтерактивный shell,
+чтобы скриптовая проверка работала
+(\fBpfsrun --shell module.pfs <<<'ls /opt'\fR).
+.TP
+.BR --user " " \fIПОЛЬЗОВАТЕЛЬ\fR
+Дропать права на этого пользователя. По умолчанию
+.B $SUDO_USER
+после самопод-нятия через sudo.
+.TP
+.B --root
+Запустить процесс root'ом внутри namespace. Сессия рабочего стола
+вызвавшего пользователя (\fB$SUDO_UID\fR) всё равно прибиндивается, и
+.B XDG_RUNTIME_DIR
+указывает туда же, чтобы root-процессы могли достучаться до Wayland/Xorg.
+.TP
+.B --no-gui
+Пропустить bind'ы
+.IR /proc , /sys , /dev , /run/user/UID ,
+.IR /tmp/.X11-unix ,
+.I /run/dbus
+и проброс Wayland/X11 окружения. Подходит для headless-команд.
+.TP
+.B --no-home
+Не биндить
+.B $HOME
+целевого пользователя в namespace. По умолчанию
+.I /home/USER
+прибиндивается, чтобы профиль приложения
+.RI ( ~/.mozilla ", " ~/.config ", " ~/.cache )
+сохранялся между запусками. Используйте для песочничного режима.
+.TP
+.BR --persist " " \fIDIR\fR
+Прокидывается в
+.BR pfsexec (8) :
+.I DIR/upper
+и
+.I DIR/work
+переиспользуются как overlay upper/work, и записи внутри namespace
+тоже сохраняются между запусками.
+.TP
+.BR -v ", " --verbose
+Печатать в stderr итоговый
+.B pfsexec
+argv прямо перед exec. Удобно для отладки.
+.TP
+.B --
+Конец опций. Дальше аргументы трактуются как флаги для auto-detected
+бинаря, а не как литеральная команда.
+.SH АВТО-ОПРЕДЕЛЕНИЕ
+Если не указаны
+.IR КОМАНДА ,
+.B --exec
+или
+.B --shell ,
+.B pfsrun
+выводит имя бинаря из basename первого модуля:
+.IP \[bu] 2
+снимает хвостовой суффикс ревизии
+.I -sfNN
+.IP \[bu]
+снимает блок версии
+.RI ( -130.0.0_64 ", " -3.11_64 ", " -2601 )
+.IP \[bu]
+снимает Porteus-метку
+.I -p
+.IP \[bu]
+прогрессивно отрезает хвостовые
+.IR -segment 'ы для построения списка кандидатов
+.PP
+Каждый кандидат ищется в модуле по путям:
+.IP
+.IR /usr/bin/<имя> ", " /opt/<имя>/<имя> ", " /opt/<имя>/<имя>-bin
+.PP
+Если совпадений нет,
+.B pfsrun
+вместо ошибки роняет вас в интерактивный shell с подсказкой посмотреть
+.B /usr/bin
+и
+.B /opt
+руками.
+.PP
+Примеры эвристики:
+.RS
+.nf
+firefox-bin-gtk3-p-130.0.0_64-sf01.pfs  -> /usr/bin/firefox-bin-gtk3
+                                           fallback /opt/firefox/firefox
+netsurf-gtk3-p-3.11_64-sf03.pfs         -> /usr/bin/netsurf-gtk3
+gparted-2601-sf02.pfs                   -> /usr/bin/gparted
+.fi
+.RE
+.SH РАЗБОР АРГУМЕНТОВ
+Аргументы после модуля разбираются простой эвристикой:
+.IP \[bu] 2
+Первый аргумент начинается с
+.B -
+=> auto-detect, аргументы уйдут к найденному бинарю
+.RI ( "pfsrun firefox.pfs --new-instance" ).
+.IP \[bu]
+Первый аргумент
+.B не
+начинается с
+.B -
+=> весь хвост это литеральная команда, без auto-detect
+.RI ( "pfsrun firefox.pfs /bin/echo hi" ).
+.IP \[bu]
+Явный
+.B --
+форсирует auto-detect независимо от вида следующего токена
+.RI ( "pfsrun module.pfs -- subcommand" ).
+.SH GUI-ОКРУЖЕНИЕ
+Без
+.B --no-gui
+.B pfsrun
+прибиндивает в namespace типичные части десктопа и пробрасывает
+переменные окружения:
+.IP \[bu] 2
+.I /proc , /sys , /dev
+\(em без них Firefox не находит
+.B /proc/self/exe
+и не видит DRI-нод.
+.IP \[bu]
+.I /run/user/UID
+\(em Wayland-сокет
+.RB ( wayland-0 ),
+PulseAudio, пользовательский DBus.
+.IP \[bu]
+.I /tmp/.X11-unix
+и
+.B XAUTHORITY
+\(em fallback на Xorg.
+.IP \[bu]
+.I /run/dbus
+\(em system DBus, нужен NetworkManager, polkit, UDisks и т.п.
+.IP \[bu]
+.B WAYLAND_DISPLAY ", " DISPLAY ", " XDG_SESSION_TYPE ", " XDG_RUNTIME_DIR
+\(em из исходной сессии.
+.IP \[bu]
+.B MOZ_ENABLE_WAYLAND=1 ", " GDK_BACKEND=wayland ", " QT_QPA_PLATFORM=wayland
+\(em если найден Wayland-сокет.
+.PP
+Сверх этого, без
+.B --no-home ,
+.B $HOME
+целевого пользователя биндится напрямую \(em профили приложений
+сохраняются на хостовой ФС.
+.SH ИЗВЕСТНЫЕ ОГРАНИЧЕНИЯ
+.SS Приложения с pkexec / polkit
+Программы, поднимающие права через
+.BR pkexec (1)
+\(em
+.BR gparted ,
+.B nm-connection-editor
+и подобные \(em падают с
+.RS
+.nf
+Error executing command as another user: No authentication agent found.
+.fi
+.RE
+Polkit auth-agent живёт в host-сессии, и из namespace до него не достучаться
+обычным способом. Обходные пути:
+.IP \[bu] 2
+Запуск с
+.B --root
+\(em никакая дополнительная эскалация уже не нужна.
+.B pfsrun
+всё равно прибиндивает desktop-сессию вызывающего пользователя.
+.IP \[bu]
+Поднять привилегии
+.I до
+запуска:
+.B sudo pfsrun --root module.pfs ...
+вообще не задействует
+.BR pkexec .
+.SS Аппаратное ускорение графики
+Рендереры, ожидающие полноценный
+.BR libdrm /Mesa/Vulkan, могут писать
+.IR libEGL ,
+.IR ZINK
+или
+.I dri2
+warning'и и переключиться на софтовый рендер. DRI-ноды доступны через
+.I /dev ,
+но vendor user-space (firmware-блобы, GBM-бэкенды) внутри namespace
+может не совпасть. Решение \(em добавить нужные модули
+.RI ( firmware-* ", " 060-vulkan-radeon ", ...)" в overlay
+или смириться с soft-рендером.
+.SS Параллельные pfsrun
+Каждый запуск создаёт свой overlay. Два
+.B pfsrun
+по одному и тому же модулю не делят
+.I /run -состояние,
+но они делят прибинженный
+.B $HOME ,
+поэтому записи в профиль идут в реальную ФС.
+.SS Wayland sandboxing под wlroots
+.B labwc
+и другие wlroots-компоситоры доверяют любому клиенту, способному
+подключиться к
+.IR wayland-0 .
+Прибинженного сокета и совпадающего UID достаточно для базовых сценариев;
+XDG-портал
+.RI ( xdg-desktop-portal-* )
+для ввода/буфера обмена не требуется. Приложениям, которым явно нужны
+порталы, понадобятся дополнительные binds.
+.SH ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ
+.TP
+.B SUDO_USER ", " SUDO_UID
+Используются для определения UID десктоп-сессии и целевого пользователя
+после дропа прав.
+.TP
+.B WAYLAND_DISPLAY ", " DISPLAY ", " XAUTHORITY ", " XDG_RUNTIME_DIR ", " XDG_SESSION_TYPE ", " LANG ", " LC_ALL
+Пробрасываются в namespace как есть, если установлены.
+.SH ФАЙЛЫ
+.TP
+.I /usr/bin/pfsrun
+сам скрипт.
+.TP
+.I /usr/bin/pfsexec
+низкоуровневый overlay-launcher, используется внутри.
+.TP
+.I /run/pfs-utils/exec/<pid>-<ns>/
+эфемерный каталог сессии для одного запуска
+.B pfsexec
+\(em чистится при выходе.
+.TP
+.I /usr/share/applications/pfsrun.desktop
+desktop entry, регистрирующий
+.B pfsrun
+как обработчик
+.IR application/x-pfs-module .
+.TP
+.I /usr/share/mime/packages/pfs-utils.xml
+описание MIME-типа для
+.B *.pfs .
+После установки запустите
+.B update-mime-database /usr/share/mime
+если файловый менеджер не подхватил тип.
+.SH КОДЫ ВОЗВРАТА
+.TP
+.B 0
+команда внутри namespace завершилась успешно.
+.TP
+.B 2
+ошибка разбора аргументов.
+.TP
+.B 3
+auto-detect провалился, и shell-fallback не запустился.
+.TP
+.B 7
+проблема в обвязке sudo /
+.B pfsexec
+(нужны root, нет unshare и т.д.).
+.PP
+В остальных случаях
+.B pfsrun
+возвращает то же, что и обёрнутая команда.
+.SH СМ. ТАКЖЕ
+.BR pfsexec (8),
+.BR pfsload (8),
+.BR pfsunload (8),
+.BR pfsactivate (8),
+.BR pfsdeactivate (8),
+.BR pfs-utils (8),
+.BR runuser (1),
+.BR sudo (8)

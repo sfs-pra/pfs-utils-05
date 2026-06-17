@@ -1,0 +1,137 @@
+.TH PFSEXTRACT 8 "2026-05-06" "pfs-utils-cli" "PuppyRus PFS Module Tools"
+.SH NAME
+pfsextract \- extract packages from a .pfs module
+.SH SYNOPSIS
+.B pfsextract
+[\fIOPTIONS\fR]
+\fIMODULE.pfs\fR
+[\fIPACKAGE\fR...]
+.SH DESCRIPTION
+.B pfsextract
+unpacks a
+.B .pfs
+squashfs module.
+.PP
+For a
+.I simple
+module (one that contains a single package), it extracts the contents into a
+directory named after the module.
+.PP
+For a
+.I container
+module (one that bundles multiple sub-packages), it extracts each sub-package
+into its own
+.B .pfs
+file inside a directory named after the container.
+Pass one or more
+.I PACKAGE
+names to extract only those sub-packages.
+.PP
+With
+.BR \-i ,
+the module is installed into the system root and the package metadata is
+registered in the pfs-utils install registry.
+.SH OPTIONS
+.TP
+.BR \-i ", " \-\-install
+Install the module into the system root
+.RI ( / )
+and register it in the install registry at
+.IR /var/lib/pfs-utils/install/ .
+.TP
+.BR \-o ", " \-\-out\-dir " " \fIDIR\fR
+Extract into
+.I DIR
+instead of the default
+.RI ./ <module-name>
+directory.
+.TP
+.BR \-d ", " \-\-nopfs
+Extract container sub-packages as plain directories instead of
+.B .pfs
+files.
+.TP
+.BR \-f ", " \-\-fast
+Use a faster compression algorithm when re-packing sub-packages.
+.TP
+.B \-\-mksqfs " " \fIPARAMS\fR
+Pass
+.I PARAMS
+verbatim to
+.BR mksquashfs (1)
+when re-packing.
+Must appear last on the command line.
+.TP
+.BR \-q ", " \-\-quiet
+Suppress progress output.
+.TP
+.B \-\-no\-progress
+Suppress the
+.B unsquashfs
+progress bar.
+.TP
+.BR \-h ", " \-\-help
+Print usage and exit.
+.SH EXAMPLES
+.PP
+Extract a simple module:
+.RS
+.nf
+pfsextract myapp.pfs
+.fi
+.RE
+.PP
+Extract a container module into separate .pfs files:
+.RS
+.nf
+pfsextract container.pfs
+.fi
+.RE
+.PP
+Extract only one sub-package from a container:
+.RS
+.nf
+pfsextract container.pfs mypackage
+.fi
+.RE
+.PP
+Install a module into the system:
+.RS
+.nf
+pfsextract \-i myapp.pfs
+.fi
+.RE
+.PP
+Extract as directories (no re-packing):
+.RS
+.nf
+pfsextract \-d container.pfs
+.fi
+.RE
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+Source module not found, or package not in container.
+.TP
+.B 2
+No source module specified.
+.PP
+Other non-zero codes propagate from
+.BR unsquashfs (1)
+or
+.BR mkpfs (8).
+.SH FILES
+.TP
+.I /var/lib/pfs-utils/install/
+Install registry (v5 FHS location).
+.SH SEE ALSO
+.BR mkpfs (8),
+.BR pfsinfo (8),
+.BR pfsuninstall (8),
+.BR pfs\-utils (8),
+.BR unsquashfs (1)
+.SH AUTHORS
+PuppyRus pfs-utils maintainers.

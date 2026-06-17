@@ -1,0 +1,66 @@
+#!/bin/sh
+#Find dynamic libraries from all packages (for PuppyRus)
+# Ensure pfs-utils binaries are resolvable via which(1) when invoked from a
+# restricted PATH (e.g. systemd, GUI, sudo without --preserve-env).
+PATH="/usr/bin:/usr/sbin:${PATH}"
+export PATH
+. $(which pfs)
+
+providers_for_library() {
+  chlib="$1"
+  pfsdir_mount_iter_indexes | while IFS= read -r idx_line; do
+    idx_container="$(printf '%s\n' "${idx_line}" | cut -f1)"
+    idx_submodule="$(printf '%s\n' "${idx_line}" | cut -f2)"
+    idx_dir="$(printf '%s\n' "${idx_line}" | cut -f3)"
+    [ -f "${idx_dir}/pfs.files" ] || continue
+    if sed -e 's:^[^/]*::' "${idx_dir}/pfs.files" | grep -E '\.so$|\.so\.[0-9]' | grep -F -- "${chlib}" >/dev/null 2>&1; then
+      if [ -n "${idx_container}" ]; then
+        printf '%s:%s\n' "${idx_container}" "${idx_submodule}"
+      else
+        printf '%s\n' "${idx_submodule}"
+      fi
+    fi
+  done | sort -u
+}
+
+main() {
+  for arg in "$@"
+  do
+    case "${arg}" in
+      "-s" | "--short") shortnames="on";;
+      "-"*[A-Za-z]*) echo "$(basename "$0"): invalid option -- '$(echo ${arg} | tr -d '-')'"; exit 1;;
+      *) rootdir="${arg}";;
+    esac
+  done
+  [ "${rootdir}" = "" ] && rootdir="."
+  if [ ! -d "${rootdir}" ]; then
+    echo "Directory \"${rootdir}\" not found!" >&2; exit 1
+  fi
+
+  alllibs="$(lddcheck "${rootdir}")"
+  if [ "${alllibs}" != "" ]; then
+    packageslist="$(echo "${alllibs}" | while read chlib; do
+      packlib="$(providers_for_library "${chlib}")"
+
+      if [ "${packlib}" != "" ]; then
+        if [ "${shortnames}" = "on" ]; then
+          packlib="$(echo "${packlib}" | sed 's/-i[0-9][0-9][0-9]//;s/-[0-9]*\..*//')"
+        fi
+        echo "$(echo "${packlib}" | sed 's/$/ \/ /' | tr -d '\n' | sed 's/ \/ $//')"
+      else
+        echo "/${chlib}"
+      fi
+    done | grep .)"
+    if [ "${packageslist}" != "" ]; then
+      showpacklist="$(echo "${packageslist}" | grep -v -E '^/' | grep -v '^[[:space:],\t]*$' | sort -uf)"
+      dubpacks="$(echo "${showpacklist}" | while read checkdpack; do echo "${showpacklist}" | grep -F "${checkdpack}"; done | sort | uniq -d)"
+      echo "${showpacklist}${dubpacks}" | sort -f | uniq -u
+      libsnotf="$(echo "${packageslist}" | grep -E '^/' | sed 's/^\///')"
+      [ "${libsnotf}" != "" ] && echo "WARNING! Not found dynamic libraries: ${IFS}${libsnotf}" >&2
+    fi
+  fi
+
+  exit 0
+}
+
+[ "${PFSFINDLIBS_SOURCE_ONLY:-0}" = "1" ] || main "$@"

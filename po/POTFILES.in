@@ -1,0 +1,12 @@
+usr/bin/pfs
+usr/bin/chroot2pfs
+usr/bin/mkpfs
+usr/bin/pfsextract
+usr/bin/pfsload
+usr/bin/pfsunload
+usr/bin/pfsactivate
+usr/bin/pfsdeactivate
+usr/bin/trim-chroot
+usr/bin/syschanges
+usr/bin/pfsexec
+usr/bin/pfsrun

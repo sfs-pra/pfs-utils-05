@@ -1,0 +1,363 @@
+#!/bin/sh
+#Read list PFS packages
+#VERSION 4.3
+
+# Ensure pfs-utils binaries are resolvable via which(1) when invoked from a
+# restricted PATH (e.g. systemd, GUI, sudo without --preserve-env).
+PATH="/usr/bin:/usr/sbin:${PATH}"
+export PATH
+if [ -f $(dirname $0)/pfs ] ;  then
+    . $(dirname $0)/pfs
+else 
+    . $(which pfs) || exit 13 
+fi    
+
+HLP(){
+echo   "Usage: $0 <par>"
+echo   "-d --delimeter	  separator character" 
+echo   "-s --stat         statistic"
+echo   "-m --mount   mount submodules"
+echo   "-i --install      installed submodules"
+echo   "   --machine    machine-readable TSV output"
+echo   "   --advise     print repack recommendations for a module"
+exit 1
+}
+
+DELIMETER='/'
+
+pfsinfo_emit_mount_index_names() {
+    root="$1"
+    delim="$2"
+
+    if [ -d "${root}${PFSDIR_MOUNT_NEW}" ]; then
+        find "${root}${PFSDIR_MOUNT_NEW}" -mindepth 3 -maxdepth 3 -type f -name pfs.files 2>/dev/null |
+            sed -e "s#^${root}${PFSDIR_MOUNT_NEW}/##" -e 's#/pfs.files$##' -e "s#/#${delim}#g"
+    fi
+
+    if [ -d "${root}${PFSDIR_MOUNT_LEGACY}" ]; then
+        find "${root}${PFSDIR_MOUNT_LEGACY}" -mindepth 2 -maxdepth 2 -type f -name pfs.files 2>/dev/null |
+            sed -e "s#^${root}${PFSDIR_MOUNT_LEGACY}/##" -e 's#/pfs.files$##'
+    fi
+}
+
+pfsinfo_emit_mount_dirs() {
+    root="$1"
+
+    if [ -d "${root}${PFSDIR_MOUNT_NEW}" ]; then
+        find "${root}${PFSDIR_MOUNT_NEW}" -mindepth 2 -maxdepth 2 -type d -printf '%P\n' 2>/dev/null | sed 's#/#:#'
+    fi
+
+    if [ -d "${root}${PFSDIR_MOUNT_LEGACY}" ]; then
+        find "${root}${PFSDIR_MOUNT_LEGACY}" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null
+    fi
+}
+
+if [ "${PFSINFO_SOURCE_ONLY:-0}" = "1" ]; then
+    return 0 2>/dev/null || exit 0
+fi
+
+for arg in "$@"
+do
+  case "${arg}" in
+	"-d" | "--delimeter" ) delimeter='yes' ;;
+	"-h" | "--help" ) HLP ;;
+    "-s" | "--stat") stat="yes";;
+    "-m" | "--mount" | "--mount-packages") readdir="mount";;
+    "-i" | "--install" | "--install-packages") readdir="install";;
+    "--machine") MACHINE="yes";;
+    "--advise" | "--recommend") ADVISE="yes";;
+    "--full") FULL="yes";;
+    "-"*[A-Za-z]*) echo "$(basename "$0"): invalid option -- '$(echo ${arg} | tr -d '-')'" >&2; exit 1;;
+    *) 	if [ "$delimeter" = 'yes' ] ; then
+			DELIMETER="$arg"
+		else 
+			inpack="${arg}"
+		fi
+		delimeter='no';;
+  esac
+done
+
+# ---- v5: --machine output contract ----
+# pfsinfo --machine <file>       -> 1 TSV line: name<TAB>format<TAB>size_bytes<TAB>compression
+# pfsinfo --machine --mount       -> 0..N TSV lines of currently mounted pfs modules:
+#                                    name<TAB>layer<TAB>path<TAB>desc<TAB>category<TAB>version
+# pfsinfo --machine --install     -> same 6-field TSV shape from installed registry
+if [ "${MACHINE}" = "yes" ] && [ "${ADVISE}" != "yes" ]; then
+    if [ "${readdir}" = "mount" ] && [ -z "${inpack}" ]; then
+        awk -v ext="${EXT}" '
+            ($3 != "squashfs" && $3 != "erofs") { next }
+            {
+                mp = $2
+                name = ""
+                if (mp ~ /^\/mnt\/\./) {
+                    name = mp
+                    sub(/^\/mnt\/\./, "", name)
+                } else if (mp ~ "\\." ext "$") {
+                    name = mp
+                    sub(/^.*\//, "", name)
+                }
+                if (name != "") {
+                    sub(/^\./, "", name)
+                    sub("\\." ext "$", "", name)
+                    printf "%s\t%s\t%s\t%s\t%s\t%s\n", name, "aufs", mp, "", "", ""
+                }
+            }
+        ' /proc/mounts
+        exit 0
+    fi
+    if [ "${readdir}" = "install" ] && [ -z "${inpack}" ]; then
+        for _r in $(pfsdir_install_roots); do
+            find "${_r}/" -mindepth 1 -maxdepth 1 -type d -printf '%f\t%p\n' 2>/dev/null
+        done | sort -fu | awk -F'\t' -v OFS='\t' '{print $1, "install", $2, "", "", ""}'
+        exit 0
+    fi
+    if [ -n "${inpack}" ] && [ -f "${inpack}" ]; then
+        abs="$(realpath "${inpack}")"
+        fst="$(fs_type "${abs}" 2>/dev/null || echo unknown)"
+        sz="$(stat -c %s "${abs}" 2>/dev/null || wc -c < "${abs}")"
+        comp="unknown"
+        if [ "${fst}" = "squashfs" ] && command -v unsquashfs >/dev/null 2>&1 ; then
+            comp="$(unsquashfs -s "${abs}" 2>/dev/null | awk '/[Cc]ompression/ {print $NF; exit}')"
+        elif [ "${fst}" = "erofs" ] && command -v dump.erofs >/dev/null 2>&1 ; then
+            comp="$(dump.erofs "${abs}" 2>/dev/null | awk '/[Cc]ompression/ {print $NF; exit}')"
+            [ -z "${comp}" ] && comp="erofs"
+        fi
+        printf '%s\t%s\t%s\t%s\n' "$(basename "${abs}")" "${fst}" "${sz}" "${comp:-unknown}"
+        exit 0
+    fi
+    echo "pfsinfo: --machine requires a file argument or --mount/--install" >&2
+    exit 1
+fi
+
+# ---- v5: --advise (measures the module with pfsbench, recommends winners) ----
+# pfsinfo --advise <file>            -> human-readable repack advice
+# pfsinfo --machine --advise <file>  -> TSV:  metric<TAB>variant<TAB>value<TAB>command
+# pfsinfo --advise --full <file>     -> measure all 12+ compressor variants
+#                                       (slower; default is 8 curated)
+#
+# --advise always re-measures: hard-coded profiles can be wrong for atypical
+# module contents (pre-compressed assets, tiny modules, oversized binaries).
+# Requires root (pfsload/pfsunload), ~2-8 minutes depending on module size.
+if [ "${ADVISE}" = "yes" ]; then
+    [ -n "${inpack}" ] && [ -f "${inpack}" ] || {
+        echo "pfsinfo: --advise requires a module file" >&2
+        exit 2
+    }
+    if [ "$(id -u)" -ne 0 ]; then
+        echo "pfsinfo: --advise must run as root (pfsload/pfsunload used for cold-read)" >&2
+        exit 3
+    fi
+    command -v pfsbench >/dev/null 2>&1 || {
+        echo "pfsinfo: pfsbench not found in PATH — needed for --advise measurement" >&2
+        exit 4
+    }
+
+    abs="$(realpath "${inpack}")"
+    name_noext="$(basename "${abs}" ".${EXT}")"
+    out_base="$(basename "${abs}")"
+    dir_abs="$(dirname -- "${abs}")"
+    tmpdir="${dir_abs}/.pfsinfo-repack-${name_noext}"
+
+    bench_csv="$(mktemp 2>/dev/null || echo /tmp/pfsinfo-advise.$$.csv)"
+    advise_args="--decompress --runs 2 --csv ${bench_csv}"
+    [ "${FULL}" = "yes" ] && advise_args="${advise_args} --full"
+
+    [ "${MACHINE}" != "yes" ] && printf \
+        'Measuring %s with pfsbench (%s). This may take a few minutes...\n' \
+        "$(basename "${abs}")" "$( [ "${FULL}" = "yes" ] && echo "all variants" || echo "curated 8 variants")" >&2
+
+    if [ "${MACHINE}" = "yes" ]; then
+        # Machine mode: pfsbench stdout silenced (we only need CSV for parsing)
+        # shellcheck disable=SC2086
+        pfsbench "${abs}" ${advise_args} >/dev/null 2>&1 || {
+            printf 'pfsinfo: pfsbench failed\n' >&2
+            exit 5
+        }
+    else
+        # Human mode: stream pfsbench table to stdout; suppress Winners/Recommendation
+        # trailer (awk exits at first "Winners:" line — the CSV is already written)
+        # shellcheck disable=SC2086
+        pfsbench "${abs}" ${advise_args} 2>/dev/null | awk '/^Winners:/{exit} {print}'
+        # Exit code comes from awk (always 0); detect pfsbench failure via CSV check below
+    fi
+
+    [ -s "${bench_csv}" ] || {
+        printf 'pfsinfo: pfsbench produced no CSV data\n' >&2
+        exit 6
+    }
+
+    # Parse CSV. CSV schema:
+    #   variant,size_kb,build_ms,roundtrip_ms,cold_read_ms,runs,source_kb
+    #
+    # Winners:
+    #   smallest        : min size_kb
+    #   fastest_unpack  : min cold_read_ms   (real decompression latency)
+    #   golden_middle   : min (size_kb / best_size_kb) * (cold_read_ms / best_cold_ms)
+    #                     -> variant closest to the size/speed Pareto knee
+    awk_advise='
+        BEGIN { FS = "," }
+        NR == 1 { next }
+        $1 == "" { next }
+        {
+            gsub(/^"|"$/, "", $1)
+            sz = $2 + 0; cr = $5 + 0
+            if (sz <= 0 || cr <= 0) next
+            idx++
+            V[idx] = $1; SZ[idx] = sz; CR[idx] = cr
+            if (!best_size || sz < best_size) { best_size = sz; best_size_v = $1 }
+            if (!best_cold || cr < best_cold) { best_cold = cr; best_cold_v = $1 }
+        }
+        END {
+            if (!idx) {
+                printf "?\t0\n?\t0\n?\t0\t0\n?\t0\t0\n"
+                exit
+            }
+            # Two middles with opposite biases:
+            #   compact : smallest image whose cold <= 3 * best_cold
+            #             (accept slower decompression for smaller size)
+            #   speed   : fastest cold whose size <= 1.5 * best_size
+            #             (accept bigger image for faster decompression)
+            cold_cap = 3.0 * best_cold
+            size_cap = 1.5 * best_size
+            for (i = 1; i <= idx; i++) {
+                if (CR[i] <= cold_cap) {
+                    if (!gc_sz || SZ[i] < gc_sz) {
+                        gc_v = V[i]; gc_sz = SZ[i]; gc_cr = CR[i]
+                    }
+                }
+                if (SZ[i] <= size_cap) {
+                    if (!gs_cr || CR[i] < gs_cr) {
+                        gs_v = V[i]; gs_sz = SZ[i]; gs_cr = CR[i]
+                    }
+                }
+            }
+            if (!gc_v) { gc_v = best_size_v; gc_sz = best_size; gc_cr = 0 }
+            if (!gs_v) { gs_v = best_cold_v; gs_cr = best_cold; gs_sz = 0 }
+            printf "%s\t%d\n", best_size_v, best_size
+            printf "%s\t%d\n", best_cold_v, best_cold
+            printf "%s\t%d\t%d\n", gc_v, gc_sz, gc_cr
+            printf "%s\t%d\t%d\n", gs_v, gs_sz, gs_cr
+        }
+    '
+    winners="$(awk "${awk_advise}" "${bench_csv}")"
+    best_size_line=$(printf '%s\n' "${winners}" | sed -n 1p)
+    best_cold_line=$(printf '%s\n' "${winners}" | sed -n 2p)
+    gold_compact_line=$(printf '%s\n' "${winners}" | sed -n 3p)
+    gold_speed_line=$(printf   '%s\n' "${winners}" | sed -n 4p)
+
+    parse_wv() { printf '%s' "$1" | cut -f1; }
+    parse_wn() { printf '%s' "$1" | cut -f2; }
+    parse_w3() { printf '%s' "$1" | cut -f3; }
+
+    sz_v=$(parse_wv "${best_size_line}"); sz_n=$(parse_wn "${best_size_line}")
+    cr_v=$(parse_wv "${best_cold_line}"); cr_n=$(parse_wn "${best_cold_line}")
+    gc_v=$(parse_wv "${gold_compact_line}"); gc_n=$(parse_wn "${gold_compact_line}"); gc_c=$(parse_w3 "${gold_compact_line}")
+    gs_v=$(parse_wv "${gold_speed_line}");  gs_n=$(parse_wn "${gold_speed_line}");  gs_c=$(parse_w3 "${gold_speed_line}")
+
+    # Current module stats (header only)
+    cur_fst="$(fs_type "${abs}" 2>/dev/null || echo unknown)"
+    cur_sz=$(stat -c %s "${abs}" 2>/dev/null || wc -c < "${abs}")
+    cur_kb=$(( (cur_sz + 1023) / 1024 ))
+    cur_comp="unknown"
+    if [ "${cur_fst}" = "squashfs" ] && command -v unsquashfs >/dev/null 2>&1 ; then
+        cur_comp="$(unsquashfs -s "${abs}" 2>/dev/null | awk '/[Cc]ompression/ {print $NF; exit}')"
+    elif [ "${cur_fst}" = "erofs" ] && command -v dump.erofs >/dev/null 2>&1 ; then
+        cur_comp="$(dump.erofs "${abs}" 2>/dev/null | awk '/[Cc]ompression/ {print $NF; exit}')"
+    fi
+
+    if [ "${MACHINE}" = "yes" ]; then
+        # TSV: label<TAB>variant<TAB>value
+        printf 'current\t%s %s\t%s\n'          "${cur_fst}" "${cur_comp}" "${cur_kb}"
+        printf 'smallest\t%s\t%s\n'            "${sz_v}" "${sz_n}"
+        printf 'fastest_unpack\t%s\t%s\n'      "${cr_v}" "${cr_n}"
+        printf 'golden_compact\t%s\t%s,%s\n'   "${gc_v}" "${gc_n}" "${gc_c}"
+        printf 'golden_speed\t%s\t%s,%s\n'     "${gs_v}" "${gs_n}" "${gs_c}"
+        rm -f "${bench_csv}"
+        exit 0
+    fi
+
+    printf '\n%s (%s %s, %s KB)\n\n' \
+        "$(basename "${abs}")" "${cur_fst}" "${cur_comp}" "${cur_kb}"
+    printf '  smallest                  : %-20s (%s KB)\n'              "${sz_v}" "${sz_n}"
+    printf '  fastest unpack            : %-20s (%s ms cold)\n'          "${cr_v}" "${cr_n}"
+    printf '  optimal, compact          : %-20s (%s KB, %s ms cold)\n'   "${gc_v}" "${gc_n}" "${gc_c}"
+    printf '  optimal, speed            : %-20s (%s KB, %s ms cold)\n'   "${gs_v}" "${gs_n}" "${gs_c}"
+    printf '\n'
+
+    rm -f "${bench_csv}"
+    exit 0
+fi
+
+if [ "${inpack}" ]; then
+  if [ -f "${inpack}" ]; then 
+    pack="$(realpath "${inpack}")"
+  else
+    echo "File \"${inpack}\" not found!" >&2; exit 1
+  fi
+fi
+
+if [ "${pack}" ]; then
+  disktypeb "${pack}" | grep -Eqi "squashfs.*version[[:space:]]*4\\."
+  exitmsg "File \"$1\" is not PFS!" $?
+  if [ "${stat}" ] ; then
+	Comptype=$(unsquashfs -s  "${pack}" |grep ompression |awk '{print $NF}' | tr "\n" " ")
+	[ "$Comptype" ] || exitmsg "$pack Is non squashfs module" 1
+	bpack=$(basename ${pack})
+	mkdir -p /tmp/squashfs/"${bpack}"
+	mount -t squashfs -o loop -o ro "${pack}" /tmp/squashfs/"${bpack}"
+	if [ -d "/tmp/squashfs/${bpack}${PFSDIR_MOUNT_NEW}" ] || [ -d "/tmp/squashfs/${bpack}${PFSDIR_MOUNT_LEGACY}" ]; then
+		ispfs=yes
+	fi
+	
+	if [ "$ispfs" = "yes" ] ; then
+		Deps=$(find /tmp/squashfs/${bpack} \( -path "/tmp/squashfs/${bpack}${PFSDIR_MOUNT_NEW}/*/*/pfs.depends" -o -path "/tmp/squashfs/${bpack}${PFSDIR_MOUNT_LEGACY}/*/pfs.depends" \) -type f -exec cat "{}" \; |sort |uniq |grep -v "^$" | tr "\n" "   ")
+		Packs=$(pfsinfo_emit_mount_index_names "/tmp/squashfs/${bpack}" ':' | sort -u | tr "\n" "   ")
+		echo "Dependenses: $Deps"
+		echo "Modules: $Packs"
+		echo ''
+		echo ''
+		standard_files="pfs.files pfs.depends pfs.dirs.empty"
+		for file in $(find /tmp/squashfs/${bpack} \( -path "/tmp/squashfs/${bpack}${PFSDIR_MOUNT_NEW}/*/*/*" -o -path "/tmp/squashfs/${bpack}${PFSDIR_MOUNT_LEGACY}/*/*" \) -type f) ; do
+			if ! echo $standard_files | grep -q $(basename $file) ; then
+				echo "[ $(echo $file |sed "s:/tmp/squashfs/${bpack}::")  ]"
+				cat $file |grep -v "^$"
+				echo ''
+		fi
+		done
+	else 
+		echo "Modules: -----"
+		echo "Dependenses:  -----"
+	fi
+
+	Msize=$(du -s ${pack} |cut -f1) 
+	Usize=$(du -s  /tmp/squashfs/"${bpack}" |cut -f1)
+	echo "Compression algorithm: $Comptype"
+	echo "Module size: $(du -hs ${pack} |cut -f1)"
+	echo "Uncompressed size: $(du -hs  /tmp/squashfs/"${bpack}" |cut -f1)"
+	if [ "${Msize:-0}" -gt 0 ] && [ "${Usize:-0}" -gt 0 ]; then
+		echo "Compression ratio: $( echo "$((Usize/$Msize))") ($( echo "$((100*$Msize /$Usize))")%)"
+	else
+		echo "Compression ratio: n/a (uncompressed size unavailable)"
+	fi
+		
+	umount /tmp/squashfs/"${bpack}"
+	rmdir  /tmp/squashfs/"${bpack}"
+  else
+  unsquashfs -l -d ""  "${pack}" | while read f ; do
+    case "$f" in
+      *"${PFSDIR_MOUNT_NEW}"/*/*/pfs.files)
+        rel=$(printf '%s\n' "$f" | sed -e "s#^.*${PFSDIR_MOUNT_NEW}/##" -e 's#/pfs.files$##')
+        printf '%s\n' "$rel" | sed -e 's#/#'"$DELIMETER"'#g'
+        ;;
+      *"${PFSDIR_MOUNT_LEGACY}"/*/pfs.files)
+        rel=$(printf '%s\n' "$f" | sed -e "s#^.*${PFSDIR_MOUNT_LEGACY}/##" -e 's#/pfs.files$##')
+        printf '%s\n' "$rel"
+        ;;
+    esac
+  done | sort -u
+  fi
+else
+  [ "${readdir}" != "install" ] && echo "$(pfsinfo_emit_mount_dirs "" | sort -fu)"
+  [ "${readdir}" != "mount" ] && { for _r in $(pfsdir_install_roots); do find "${_r}/" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null; done | sort -fu; }
+fi
+exit 0

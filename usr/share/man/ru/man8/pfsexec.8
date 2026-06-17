@@ -1,0 +1,190 @@
+.TH PFSEXEC 8 "2026-04" "pfs-utils-cli" "Утилиты PFS-модулей"
+.SH ИМЯ
+pfsexec \- запустить команду внутри приватного overlay-namespace с PFS-модулем
+.SH СИНТАКСИС
+.B pfsexec
+[\fIОПЦИИ\fR] [\fIМОДУЛЬ.pfs\fR] [\fIКОМАНДА\fR [\fIАРГУМЕНТЫ\fR...]]
+.SH ОПИСАНИЕ
+.B pfsexec
+запускает
+.I КОМАНДУ
+во вновь созданном mount namespace, в котором lower-слои
+.BR overlayfs (5)
+\(em это один или несколько
+.B .pfs
+модулей, наложенных поверх корня хоста. Upper-слой по умолчанию это
+.BR tmpfs (5)
+в
+.IR /run/pfs-utils/exec/$$-<ns> ,
+поэтому изменения теряются при выходе. Модули монтируются loop'ом
+read-only с подходящей ФС
+.RB ( squashfs ", " erofs ),
+склеиваются как
+.IR lowerdir=mod1:mod2:...:/ ,
+и затем выполняется
+.BR pivot_root (8),
+чтобы команда видела этот merged-tree как корень.
+
+В отличие от
+.BR pfsload (8) ,
+.B pfsexec
+не меняет работающую систему: после выхода команды namespace и overlay
+исчезают. В отличие от
+.BR pfsactivate (8) ,
+.B pfsexec
+даёт полную kernel-level прозрачность (без symlinks) ценой того, что
+действует только в рамках процесса.
+.SH ОПЦИИ
+.TP
+.BR -h ", " --help
+Краткая справка и выход.
+.TP
+.BR -m " " \fIМОДУЛЬ\fR
+Добавить ещё один модуль в overlay-стек. Можно повторять. Сочетается
+с позиционным
+.IR МОДУЛЬ.pfs .
+.TP
+.B --rw
+Использовать приватные
+.B tmpfs
+upper/work под
+.I /run/pfs-utils/exec
+(дефолт). Изменения теряются при выходе.
+.TP
+.BR --persist " " \fIDIR\fR
+Использовать
+.IR DIR/upper " и " DIR/work
+как постоянные upper/work для overlay. Записи переживают перезапуски,
+но требует осторожности \(em несогласованные метаданные overlay могут
+испортить состояние.
+.TP
+.BR --bind " " \fIПУТЬ\fR
+Прибиндить хостовой
+.I ПУТЬ
+внутрь namespace. Можно повторять. Полезно для
+.IR /proc , /sys , /dev , /run/user/$UID , /tmp/.X11-unix , /run/dbus
+и аналогичных каналов.
+.SH АРГУМЕНТЫ
+.TP
+.I МОДУЛЬ.pfs
+Позиционный путь к PFS-модулю. Эквивалент
+.BR -m " " \fIМОДУЛЬ.pfs\fR .
+Должен быть указан хотя бы один модуль (позиционно или через
+.BR -m ).
+.TP
+.I КОМАНДА
+Программа, которая запускается внутри namespace после
+.BR pivot_root .
+Если опущена, стартует shell из
+.B $SHELL
+(или
+.BR /bin/bash ).
+Команда исполняется с тем же UID/GID, что и сам
+.B pfsexec ;
+.B pfsexec
+.B не
+дропает права \(em используйте
+.BR runuser (1)
+или высокоуровневый
+.BR pfsrun (8).
+.SH ПОДДЕРЖКА ФС
+.B pfsexec
+определяет ФС модуля через
+.B fs_type
+из
+.BR pfs (8) ,
+которая проверяет магические байты:
+.B squashfs
+(offset 0) и
+.B erofs
+(offset 1024). Распознаются обе endianness. Прочие форматы отклоняются.
+.SH ТРЕБОВАНИЯ К ЯДРУ
+Ядро должно поддерживать
+.B overlayfs
+(\fIgrep overlay /proc/filesystems\fR) и
+.BR unshare " " --propagation=private
+(util-linux 2.27+).
+.B pfsexec
+выводит понятную ошибку, если чего-то не хватает.
+.SH ПРИВИЛЕГИИ
+.B pfsexec
+обязан запускаться от root: внутри он делает
+.B mount
+и
+.BR pivot_root .
+Для дружественного UX (дроп привилегий, проброс GUI, bind $HOME, …)
+используйте
+.BR pfsrun (8).
+.SH КОДЫ ВОЗВРАТА
+.TP
+.B 0
+команда внутри namespace отработала успешно.
+.TP
+.B 2
+ошибка аргументов (нет модуля, неизвестная опция, пробелы в пути).
+.TP
+.B 3
+ядро не умеет overlayfs.
+.TP
+.B 4
+модуль не найден.
+.TP
+.B 5
+неподдерживаемая ФС модуля.
+.TP
+.B 6
+не удалось создать overlay-каталоги.
+.TP
+.B 7
+не root /
+.B unshare
+недоступен / pivot_root упал.
+.PP
+В остальных случаях
+.B pfsexec
+возвращает то же, что и обёрнутая команда.
+.SH ФАЙЛЫ
+.TP
+.I /run/pfs-utils/exec/$$-<ns>/
+эфемерный каталог сессии; чистится при выходе.
+.TP
+.I /run/pfs-utils/exec/$$-<ns>/module-N
+loop-маунт N-го модуля.
+.TP
+.I /run/pfs-utils/exec/$$-<ns>/upper
+.TQ
+.I /run/pfs-utils/exec/$$-<ns>/work
+overlay upper/work в режиме
+.BR --rw .
+.SH ПРИМЕРЫ
+.PP
+Разовая команда:
+.RS
+.nf
+pfsexec firefox-bin-gtk3-p-130.0.0_64-sf01.pfs /opt/firefox/firefox --new-instance
+.fi
+.RE
+.PP
+Стек из двух модулей и shell:
+.RS
+.nf
+pfsexec -m base.pfs -m extras.pfs /bin/bash
+.fi
+.RE
+.PP
+Дополнительные binds и постоянный overlay:
+.RS
+.nf
+pfsexec --bind /home/$USER --persist /tmp/dev-overlay devtools.pfs make build
+.fi
+.RE
+.SH СМ. ТАКЖЕ
+.BR pfsrun (8),
+.BR pfsload (8),
+.BR pfsunload (8),
+.BR pfsactivate (8),
+.BR pfsdeactivate (8),
+.BR pfs-utils (8),
+.BR overlayfs (5),
+.BR unshare (1),
+.BR pivot_root (8)

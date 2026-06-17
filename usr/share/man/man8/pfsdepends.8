@@ -1,0 +1,90 @@
+.TH PFSDEPENDS 8 "2026-05-06" "pfs-utils-cli" "PuppyRus PFS Module Tools"
+.SH NAME
+pfsdepends \- list unresolved dependencies of pfs packages
+.SH SYNOPSIS
+.B pfsdepends
+[\fIOPTIONS\fR]
+[\fIPACKAGE\fR...]
+.SH DESCRIPTION
+.B pfsdepends
+reads
+.B pfs.depends
+files from mounted and installed pfs packages and reports which dependencies
+are not yet satisfied by any currently mounted or installed package.
+.PP
+Without arguments it checks all mounted and installed packages.
+With one or more
+.I PACKAGE
+names it checks only those packages.
+.PP
+With
+.BR \-f ,
+it reads dependency information directly from a
+.B .pfs
+module file without mounting it.
+.SH OPTIONS
+.TP
+.BR \-m ", " \-\-mount
+Check only mounted packages.
+.TP
+.BR \-i ", " \-\-install
+Check only installed packages.
+.TP
+.BR \-a ", " \-\-all
+Report all dependencies, including those already satisfied.
+.TP
+.BR \-f ", " \-\-file " " \fIFILE\fR
+Read dependency information from
+.I FILE
+(a
+.B .pfs
+module) instead of the live registry.
+.TP
+.BR \-p ", " \-\-print\-all
+When a dependency has alternatives (separated by
+.BR " / " ),
+print the full alternative expression instead of just the preferred variant.
+.SH EXAMPLES
+.PP
+List all unresolved dependencies across mounted and installed packages:
+.RS
+.nf
+pfsdepends
+.fi
+.RE
+.PP
+Check a specific package:
+.RS
+.nf
+pfsdepends myapp
+.fi
+.RE
+.PP
+Check dependencies from a module file:
+.RS
+.nf
+pfsdepends \-f myapp.pfs
+.fi
+.RE
+.SH EXIT STATUS
+.TP
+.B 0
+Success (unresolved dependencies are printed to stdout; an empty output means
+all dependencies are satisfied).
+.TP
+.B 1
+File not found.
+.SH FILES
+.TP
+.I /var/lib/pfs-utils/mount/<package>/pfs.depends
+Dependency list for a mounted package.
+.TP
+.I /var/lib/pfs-utils/install/<package>/pfs.depends
+Dependency list for an installed package.
+.SH SEE ALSO
+.BR pfsinfo (8),
+.BR pfsfindlibs (8),
+.BR pfsload (8),
+.BR pfs\-utils (8)
+.SH AUTHORS
+PuppyRus pfs-utils maintainers.

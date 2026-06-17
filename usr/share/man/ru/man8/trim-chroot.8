@@ -1,0 +1,58 @@
+.TH TRIM\-CHROOT 8 "2026-05-06" "pfs-utils-cli" "Утилиты PFS-модулей"
+.SH ИМЯ
+trim\-chroot \- удалить временные файлы из дерева каталогов chroot
+.SH СИНТАКСИС
+.B trim\-chroot
+\fIDIR\fR
+.SH ОПИСАНИЕ
+.B trim\-chroot
+удаляет файлы кэша, артефакты сборки и другое временное содержимое из дерева
+каталогов chroot
+.I DIR
+для уменьшения размера модуля
+.BR .pfs ,
+собранного из него.
+.PP
+Безусловно удаляет:
+.RS
+.TP
+.I /var/log
+.TP
+.I /run
+.TP
+.I /etc/udev/hwdb.bin
+.TP
+.I /etc/ld.so.cache
+.TP
+.I /var/cache/ldconfig
+.TP
+.I /var/cache/fontconfig
+.TP
+.I /var/lib/pacman/sync
+.TP
+.I /var/cache/pacman/pkg
+.TP
+.I /usr/share/applications/mimeinfo.cache
+.RE
+.PP
+Также удаляет крупные размеры иконок (256x256, 96x96), несущественные каталоги
+раскладок клавиатуры и mtree-файлы pacman.
+.PP
+.B Примечание:
+Эта утилита содержит множество закомментированных секций для опциональной
+очистки (локали, документация, заголовки разработчика, файлы Python и т.д.).
+По умолчанию они отключены и должны быть включены путём редактирования скрипта.
+.SH АРГУМЕНТЫ
+.TP
+.I DIR
+Корень дерева каталогов chroot для очистки.
+.SH КОДЫ ВЫХОДА
+.TP
+.B 0
+Успех.
+.SH СМ. ТАКЖЕ
+.BR chroot2pfs (8),
+.BR mkpfs (8),
+.BR pfs\-utils (8)
+.SH АВТОРЫ
+Команда сопровождения pfs-utils PuppyRus.

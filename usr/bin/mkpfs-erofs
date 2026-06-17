@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+readonly PROGNAME="$(basename -- "$0")"
+readonly DEFAULT_COMPRESSION="-zlz4hc"
+: "${EXT:=pfs}"
+
+usage() {
+    cat <<EOF
+Usage: $PROGNAME [-o OUTPUT.${EXT}] [MKFS_EROFS_OPTION ...] SOURCE_DIR
+
+Create a .${EXT} image from SOURCE_DIR using mkfs.erofs.
+
+Options:
+    -o, --out-file PATH   Output image path. Defaults to ./<source>.${EXT}
+    -h, --help            Show this help message and exit
+
+All other options are passed through to mkfs.erofs unchanged.
+If no compression option is supplied, $DEFAULT_COMPRESSION is used by default.
+
+Examples:
+    $PROGNAME -o module.${EXT} ./module-root
+    $PROGNAME --threads=4 ./module-root
+    $PROGNAME -zlz4 ./module-root
+EOF
+}
+
+die() {
+    local message=$1
+    local code=${2:-1}
+
+    printf '%s: %s\n' "$PROGNAME" "$message" >&2
+    exit "$code"
+}
+
+has_compression_override() {
+    local arg
+
+    for arg in "$@"; do
+        case "$arg" in
+            -z|-z*|--compression|--compression=*)
+                return 0
+                ;;
+        esac
+    done
+
+    return 1
+}
+
+default_output_path() {
+    local source_dir=$1
+    local base_name=${source_dir%/}
+
+    [[ -n "$base_name" ]] || base_name="$source_dir"
+    base_name=${base_name##*/}
+    [[ -n "$base_name" ]] || base_name="module"
+
+    printf './%s.%s\n' "$base_name" "${EXT}"
+}
+
+main() {
+    local output_path=""
+    local source_dir=""
+    local arg_count
+    local -a passthrough_args=()
+    local -a mkfs_cmd=(mkfs.erofs)
+
+    while (($#)); do
+        case "$1" in
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            -o|--out-file)
+                shift
+                (($#)) || die "option '-o/--out-file' requires an argument"
+                output_path=$1
+                ;;
+            --out-file=*)
+                output_path=${1#*=}
+                [[ -n "$output_path" ]] || die "option '--out-file' requires an argument"
+                ;;
+            --)
+                shift
+                passthrough_args+=("$@")
+                break
+                ;;
+            *)
+                passthrough_args+=("$1")
+                ;;
+        esac
+
+        shift
+    done
+
+    arg_count=${#passthrough_args[@]}
+    ((arg_count >= 1)) || die "missing SOURCE_DIR (see --help)"
+
+    source_dir=${passthrough_args[arg_count - 1]}
+    unset 'passthrough_args[arg_count - 1]'
+
+    [[ -d "$source_dir" ]] || die "source directory not found: $source_dir"
+
+    if [[ -z "$output_path" ]]; then
+        output_path=$(default_output_path "$source_dir")
+    fi
+
+    command -v mkfs.erofs >/dev/null 2>&1 || die "mkfs.erofs not found in PATH" 127
+
+    if ! has_compression_override "${passthrough_args[@]}"; then
+        mkfs_cmd+=("$DEFAULT_COMPRESSION")
+    fi
+
+    mkfs_cmd+=("${passthrough_args[@]}")
+    mkfs_cmd+=("$output_path" "$source_dir")
+
+    "${mkfs_cmd[@]}"
+}
+
+main "$@"

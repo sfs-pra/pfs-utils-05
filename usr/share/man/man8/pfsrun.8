@@ -1,0 +1,323 @@
+.TH PFSRUN 8 "2026-04" "pfs-utils-cli" "PFS module tools"
+.SH NAME
+pfsrun \- friendly launcher for applications from PFS modules
+.SH SYNOPSIS
+.B pfsrun
+[\fIOPTIONS\fR] \fIMODULE.pfs\fR [\fICOMMAND\fR [\fIARGS\fR...]]
+.br
+.B pfsrun
+[\fIOPTIONS\fR] \fB-m\fR \fIMOD1.pfs\fR [\fB-m\fR \fIMOD2.pfs\fR ...] [\fB--\fR \fICOMMAND\fR [\fIARGS\fR...]]
+.SH DESCRIPTION
+.B pfsrun
+wraps
+.BR pfsexec (8)
+with sane defaults so an unprivileged user can launch a GUI application
+that lives inside a
+.B .pfs
+(squashfs / erofs) module without remembering bind paths,
+privilege drops, or environment passing.
+
+When invoked without
+.B sudo
+the script self-elevates via
+.BR sudo (8)
+preserving session variables.
+Inside the namespace it drops privileges back to the invoking
+user via
+.BR runuser (1)
+so the process matches the owner of
+.IR /run/user/$UID/wayland-0 ,
+\(em this is the easiest way to satisfy Mozilla's "running as root in a
+regular user's session is not supported" check and similar guards in other
+toolkits.
+.SH OPTIONS
+.TP
+.BR -h ", " --help
+Show inline help with all options and a few examples.
+.TP
+.BR -m " " \fIMODULE\fR
+Add another module to the overlay stack. Repeatable. The first module's
+basename is also used for the auto\-detected binary.
+.TP
+.BR --bind " " \fIPATH\fR
+Extra bind mount injected into the namespace, on top of the GUI defaults.
+Repeatable.
+.TP
+.BR --exec " " \fIPATH\fR
+Override the auto\-detected main binary. Useful when the module ships
+several launchers or the heuristic picks the wrong one.
+.TP
+.B --shell
+Drop into an interactive shell inside the namespace. With a TTY a real
+.BR bash (1)
+session is started with a
+.B (pfsrun)
+PS1 marker; on a pipe / heredoc a non\-interactive shell is used so
+scripted probing works (\fBpfsrun --shell module.pfs <<<'ls /opt'\fR).
+.TP
+.BR --user " " \fIUSER\fR
+Drop privileges to this user. Defaults to
+.B $SUDO_USER
+when self\-elevated.
+.TP
+.B --root
+Run as root inside the namespace. The GUI session of the invoking user
+(\fB$SUDO_UID\fR) is still bound and
+.B XDG_RUNTIME_DIR
+is set accordingly so root processes can reach the user's Wayland/Xorg
+display.
+.TP
+.B --no-gui
+Skip
+.IR /proc , /sys , /dev , /run/user/UID ,
+.IR /tmp/.X11-unix ,
+.I /run/dbus
+binds and Wayland/X11 environment variables. Useful for headless
+\fIcommand\fR runs.
+.TP
+.B --no-home
+Do not bind the target user's
+.B $HOME
+into the namespace. By default
+.I /home/USER
+is bound so the application's profile
+.RI ( ~/.mozilla ", " ~/.config ", " ~/.cache )
+persists between runs. Use this for sandboxed, single\-shot launches.
+.TP
+.BR --persist " " \fIDIR\fR
+Forwarded to
+.BR pfsexec (8) :
+.I DIR/upper
+and
+.I DIR/work
+are reused as the overlay upper/work pair, so namespace\-local writes
+also persist between runs.
+.TP
+.BR -v ", " --verbose
+Print the resolved
+.B pfsexec
+argv to stderr right before exec. Handy for debugging.
+.TP
+.B --
+End of options. Following arguments are treated as flags for the
+auto\-detected binary, never as a literal command.
+.SH AUTO-DISCOVERY
+When no
+.IR COMMAND ,
+.B --exec
+or
+.B --shell
+is given,
+.B pfsrun
+derives a binary name from the first module's basename:
+.IP \[bu] 2
+strip trailing
+.I -sfNN
+revision suffix
+.IP \[bu]
+strip a trailing version block
+.RI ( -130.0.0_64 ", " -3.11_64 ", " -2601 )
+.IP \[bu]
+strip the
+.I -p
+"porteus" tag
+.IP \[bu]
+progressively trim trailing
+.IR -segment s
+to build fallback candidates
+.PP
+Each candidate is searched inside the module at:
+.IP
+.IR /usr/bin/<name> ", " /opt/<name>/<name> ", " /opt/<name>/<name>-bin
+.PP
+If nothing matches,
+.B pfsrun
+drops the user into an interactive shell instead of failing, with a
+hint to inspect
+.B /usr/bin
+and
+.B /opt
+manually.
+.PP
+Examples of the heuristic:
+.RS
+.nf
+firefox-bin-gtk3-p-130.0.0_64-sf01.pfs  -> /usr/bin/firefox-bin-gtk3
+                                           fallback /opt/firefox/firefox
+netsurf-gtk3-p-3.11_64-sf03.pfs         -> /usr/bin/netsurf-gtk3
+gparted-2601-sf02.pfs                   -> /usr/bin/gparted
+.fi
+.RE
+.SH ARGUMENT HANDLING
+The arguments after the module are interpreted by a small heuristic:
+.IP \[bu] 2
+First argument starts with
+.B -
+=> auto\-detect, args go to the binary
+.RI ( "pfsrun firefox.pfs --new-instance" ).
+.IP \[bu]
+First argument does not start with
+.B -
+=> treat the whole tail as a literal command line, no auto\-detect
+.RI ( "pfsrun firefox.pfs /bin/echo hi" ).
+.IP \[bu]
+Explicit
+.B --
+forces auto\-detect regardless of how the next token looks
+.RI ( "pfsrun module.pfs -- subcommand" ).
+.SH GUI ENVIRONMENT
+With
+.B --no-gui
+absent (the default)
+.B pfsrun
+binds the host\-side desktop plumbing into the namespace and
+propagates the corresponding env vars:
+.IP \[bu] 2
+.I /proc , /sys , /dev
+\(em without these Firefox cannot resolve
+.B /proc/self/exe
+or open DRI nodes.
+.IP \[bu]
+.I /run/user/UID
+\(em Wayland socket
+.RB ( wayland-0 ),
+PulseAudio, user DBus.
+.IP \[bu]
+.I /tmp/.X11-unix
+and
+.B XAUTHORITY
+\(em Xorg fallback.
+.IP \[bu]
+.I /run/dbus
+\(em system DBus, used by NetworkManager, polkit, UDisks, etc.
+.IP \[bu]
+.B WAYLAND_DISPLAY ", " DISPLAY ", " XDG_SESSION_TYPE ", " XDG_RUNTIME_DIR
+\(em forwarded from the invoking session.
+.IP \[bu]
+.B MOZ_ENABLE_WAYLAND=1 ", " GDK_BACKEND=wayland ", " QT_QPA_PLATFORM=wayland
+\(em set when a Wayland socket is detected.
+.PP
+On top of that, unless
+.B --no-home
+is specified, the target user's
+.B $HOME
+is bind\-mounted so application profiles persist on the host.
+.SH KNOWN LIMITATIONS
+.SS pkexec / polkit applications
+Apps that escalate via
+.BR pkexec (1)
+\(em e.g.
+.BR gparted ,
+.B nm-connection-editor
+\(em fail with
+.RS
+.nf
+Error executing command as another user: No authentication agent found.
+.fi
+.RE
+The polkit authentication agent runs in the user's host session; from
+inside the namespace it is not reachable through the bus the way the
+agent expects. Workarounds:
+.IP \[bu] 2
+Run with
+.B --root
+so no further escalation is needed.
+.B pfsrun
+will still bind the desktop session of the invoking user.
+.IP \[bu]
+Pre\-authenticate before launching:
+\fBsudo pfsrun --root module.pfs ...\fR avoids
+.B pkexec
+entirely.
+.SS Hardware-accelerated graphics
+Renderers expecting full
+.BR libdrm /Mesa/Vulkan plumbing may print
+.IR libEGL ,
+.IR ZINK ,
+or
+.I dri2
+warnings and fall back to software. The DRI render nodes are exposed
+through the
+.I /dev
+bind, but vendor user\-space (firmware blobs, GBM backends) might still
+mismatch with the host. Add the relevant pfs-modules
+.RI ( firmware-* ", " 060-vulkan-radeon , ...)
+to the overlay or accept software rendering.
+.SS Multiple parallel pfsrun invocations
+Each invocation creates a fresh overlay session. Two
+.B pfsrun
+runs against the same module do not share
+.I /run
+state, but they do share the bound
+.B $HOME ,
+so writes to the user's profile go through to the host filesystem.
+.SS Wayland sandboxing under wlroots
+.B labwc
+and other wlroots compositors trust any client that can connect to
+.IR wayland-0 .
+A bound socket plus matching UID is therefore enough; XDG portals
+.RI ( xdg-desktop-portal-* )
+are not required for basic input/clipboard. Apps that explicitly want
+portals will need extra binds.
+.SH ENVIRONMENT
+.TP
+.B SUDO_USER ", " SUDO_UID
+Used to determine the GUI session UID and the privilege drop target.
+.TP
+.B WAYLAND_DISPLAY ", " DISPLAY ", " XAUTHORITY ", " XDG_RUNTIME_DIR ", " XDG_SESSION_TYPE ", " LANG ", " LC_ALL
+Forwarded into the namespace verbatim when set.
+.SH FILES
+.TP
+.I /usr/bin/pfsrun
+the script itself.
+.TP
+.I /usr/bin/pfsexec
+the lower\-level overlay launcher used internally.
+.TP
+.I /run/pfs-utils/exec/<pid>-<ns>/
+ephemeral session directory for a single
+.B pfsexec
+run; cleaned up on exit.
+.TP
+.I /usr/share/applications/pfsrun.desktop
+desktop entry that registers
+.B pfsrun
+as a handler for
+.IR application/x-pfs-module .
+.TP
+.I /usr/share/mime/packages/pfs-utils.xml
+MIME definition for
+.B *.pfs
+modules. Run
+.B update-mime-database /usr/share/mime
+once after install if the file manager does not pick it up.
+.SH EXIT STATUS
+.TP
+.B 0
+the in\-namespace command exited successfully.
+.TP
+.B 2
+argument parsing error.
+.TP
+.B 3
+auto\-detect failed and
+.B --shell
+fallback could not be started.
+.TP
+.B 7
+sudo or
+.B pfsexec
+plumbing problem (must run as root, unshare unavailable, ...).
+.PP
+For other codes,
+.B pfsrun
+returns whatever the wrapped command returned.
+.SH SEE ALSO
+.BR pfsexec (8),
+.BR pfsload (8),
+.BR pfsunload (8),
+.BR pfsactivate (8),
+.BR pfsdeactivate (8),
+.BR pfs-utils (8),
+.BR runuser (1),
+.BR sudo (8)

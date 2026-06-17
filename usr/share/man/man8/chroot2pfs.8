@@ -1,0 +1,227 @@
+.TH CHROOT2PFS 8 "2026-05-06" "pfs-utils-cli" "PuppyRus PFS Module Tools"
+.SH NAME
+chroot2pfs \- build a .pfs module by running a command inside a chroot or nspawn container
+.SH SYNOPSIS
+.B chroot2pfs
+[\fIOPTIONS\fR]
+[\fB\-\-command\fR \fICOMMAND\fR]
+.br
+.B chroot2pfs
+[\fIOPTIONS\fR]
+\fIMODULE.pfs\fR
+.SH DESCRIPTION
+.B chroot2pfs
+assembles a layered root from existing
+.B .pfs
+modules (or the running system's AUFS layers), executes a command or script
+inside that environment, then captures the resulting filesystem changes into a
+new
+.B .pfs
+module or directory.
+.PP
+The default layering backend is
+.B OverlayFS
+(\fB\-\-overlay\fR).
+Pass
+.B \-\-aufs
+to use AUFS instead.
+.PP
+When
+.I NAME
+is given without a
+.B .pfs
+suffix, the output is a plain directory.
+When
+.I NAME
+ends with
+.BR .pfs ,
+the changes are compressed into a squashfs module.
+.PP
+Passing an existing
+.B .pfs
+module as the sole positional argument triggers
+.I rebuild mode:
+the module is extracted, its embedded build metadata is replayed, and a fresh
+module is produced.
+.SH OPTIONS
+.TP
+.BR \-n ", " \-o ", " \-\-name " " \fINAME\fR
+Output name.
+If
+.I NAME
+has no
+.B .pfs
+suffix, a directory is created.
+If omitted,
+.B chroot2pfs
+prompts interactively.
+.TP
+.B \-\-overlay
+Use OverlayFS for the chroot root layer (default).
+.TP
+.B \-\-aufs
+Use AUFS instead of OverlayFS for the chroot root layer.
+.TP
+.BR \-m ", " \-\-mask " " \fIPATTERN\fR
+Filter system AUFS bundles by
+.I PATTERN
+to build the chroot base.
+.TP
+.B \-\-mlist " " \fILIST\fR
+Comma-separated list of modules and directories to use as the chroot base.
+Prefix an entry with
+.B #
+to exclude it.
+.TP
+.B \-\-flist " " \fIFILE\fR
+Read the module list from
+.IR FILE .
+Lines starting with
+.B #
+are excluded.
+.TP
+.BR \-c ", " \-\-contaner " " \fITYPE\fR
+Container type:
+.B chroot
+(default) or
+.B nspawn
+(requires
+.BR systemd\-nspawn (1)
+on both host and guest).
+.TP
+.B \-\-boot
+Pass
+.B \-b
+to
+.BR systemd\-nspawn (1).
+Only valid with
+.BR \-c " " nspawn .
+.TP
+.B \-\-command " " \fICOMMAND\fR
+Command to execute inside the container.
+Must be the last option on the command line.
+.TP
+.BR \-s ", " \-\-script " " \fISCRIPT\fR
+Copy
+.I SCRIPT
+into the container and execute it there.
+.TP
+.B \-\-bind " " \fILIST\fR
+Comma-separated bind mounts in the form
+.IR /HOST/DIR :: /GUEST/DIR .
+.TP
+.B \-X
+Allow the container to connect to the current GUI session.
+For X11 this grants local access with
+.BR xhost (1)
+and binds
+.IR /tmp/.X11-unix .
+For Wayland it binds the caller runtime directory
+.IR /run/user/$UID
+and propagates
+.BR WAYLAND_DISPLAY ,
+.BR XDG_RUNTIME_DIR ,
+and related toolkit variables.
+Recommended with
+.BR \-c " " nspawn .
+.PP
+Interactive shells opened by
+.B chroot2pfs
+use a blue-background prompt marker inside both
+.B chroot
+and
+.B nspawn
+containers. This is only a shell prompt marker; it does not depend on nspawn.
+.TP
+.B \-\-nomod
+Run the command but do not create an output module.
+.TP
+.BR \-f ", " \-\-fast
+Use a faster compression algorithm for the output module.
+.TP
+.B \-\-notrim
+Skip the default
+.BR trim-chroot (8)
+pass. Without this option,
+.B chroot2pfs
+removes disposable paths such as logs, runtime directories and package caches
+from the captured changes before creating the output directory or module.
+.TP
+.BR \-w ", " \-\-wh
+Preserve AUFS whiteout files in the output.
+.TP
+.BR \-h ", " \-\-help
+Print usage and exit.
+.SH EXAMPLES
+.PP
+Install a package into a module directory:
+.RS
+.nf
+chroot2pfs \-o ModuleDIR \-\-flist /tmp/module.list \-\-command apt install mc
+.fi
+.RE
+.PP
+Run a GUI application from a guest system without creating a module. Use
+.B \-X
+for X11/Wayland socket propagation:
+.RS
+.nf
+chroot2pfs \-\-nomod \-X \-c chroot \-\-mlist /path/1.pfs,3.pfs \-\-command pcmanfm
+.fi
+.RE
+.PP
+Rebuild an existing module:
+.RS
+.nf
+chroot2pfs myapp.pfs
+.fi
+.RE
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+Module rebuild error or wrong module type.
+.TP
+.B 2
+Overlay/AUFS mount error.
+.TP
+.B 3
+Root mount error.
+.TP
+.B 4
+A layer file does not exist.
+.TP
+.B 5
+Cannot insert layer.
+.TP
+.B 6
+Output file or directory already exists.
+.PP
+Other non-zero codes are propagated from the container command.
+.SH ENVIRONMENT
+.TP
+.B PFS_LAYERING
+When set to
+.B aufs
+or
+.BR overlay ,
+overrides automatic layering detection.
+.SH FILES
+.TP
+.I /var/lib/chroot2pfs/<name>/cmdline
+Build metadata saved inside the module for later rebuild.
+.TP
+.I /var/lib/chroot2pfs/<name>/date
+Timestamp of the build.
+.SH SEE ALSO
+.BR mkpfs (8),
+.BR pfs (8),
+.BR pfsload (8),
+.BR pfsunload (8),
+.BR pfs\-utils (8),
+.BR systemd\-nspawn (1)
+.SH AUTHORS
+PuppyRus pfs-utils maintainers.
+Originally by Alexandr Betkher (betcher), magos-linux.ru.

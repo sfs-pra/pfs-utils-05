@@ -1,0 +1,190 @@
+#!/bin/sh
+#Unmount filesystem from AUFS
+#260307 sfs
+# Ensure pfs-utils binaries are resolvable via which(1) when invoked from a
+# restricted PATH (e.g. systemd, GUI, sudo without --preserve-env).
+PATH="/usr/bin:/usr/sbin:${PATH}"
+export PATH
+if ! command -v pfs >/dev/null 2>&1; then
+    PATH="$(dirname "$0"):${PATH}"
+    export PATH
+fi
+. "$(which pfs)"
+HLP () {
+  echo "$(_ 'Usage:') $(basename "$0") FILESYSTEM $(_ '(squashfs module, dir, iso, img, etc.)')"
+  echo "$(_ '-n  --no-update  - do not update icon caches, fonts, etc.')"
+  echo "$(_ '-s  --saveram    - do not remove module from RAM after unmounting')"
+  echo "$(_ '-v               - verbose output')"
+  echo "$(_ '-h  --help       - this help')"
+  exit 2
+}
+
+for arg in "$@"
+do
+  case "${arg}" in
+    "-n" | "--no-update") fupdate="no";;
+    "-s" | "--saveram") saveram="yes";;
+    "-v" ) verb="yes";;
+    "-h" | "--help") infile=""; break;;
+    "-"*[A-Za-z]*) echo "$(basename "$0"): invalid option -- '$(echo ${arg} | tr -d '-')'" >&2; exit 1;;
+    *) infile="${arg}";;
+  esac
+done
+
+[ "${infile}_" = "_" ] && HLP
+
+# v5: reject whitespace in module path (same policy as mkpfs)
+case "${infile}" in
+    *" "*|*"	"*)
+        printf "$(_ '%s: whitespace in module names is not supported: %s')\n" "$(basename "$0")" "${infile}" >&2
+        printf "$(_ '%s: whitespace in module paths is not supported.')\n" "$(basename "$0")" >&2
+        exit 2
+        ;;
+esac
+
+allow_only_root
+pfs_aufs_only_runtime "$(basename "$0")" || exit $?
+
+if [ -f "${infile}" ] ; then 
+	fsname="$(basename $(realpath "${infile}"))" 
+	checksfs_for_layering >/dev/null || exitmsg "$(_ 'Kernel does not support PFS!')" 3
+else
+	fsname="$(basename "${infile}")"
+fi
+
+# Normalize fsname to match pfsload's mount-point convention. pfsload
+# computes fsname from the input file (which carries a .${EXT} extension),
+# so mount points are typically /mnt/.<name>.${EXT}. When the caller passes
+# a bare name (no .${EXT}), promote to the .${EXT} variant *if* such a mount
+# actually exists; otherwise keep the bare form (legacy compatibility).
+case "${fsname}" in
+    *.${EXT}) ;;
+    *)
+        if grep -q " ${prefixmp}${fsname}.${EXT} " /proc/mounts || \
+           grep -q " /run/bundles/.${fsname}.${EXT} " /proc/mounts ; then
+            fsname="${fsname}.${EXT}"
+        fi
+        ;;
+esac
+
+#mountpoint="${prefixmp}${fsname}"
+# Primary mountpoint is ${prefixmp}${fsname}. pfsload may also create a
+# secondary bind at /run/bundles/.${fsname}; unmount both when present.
+primary_mp="${prefixmp}${fsname}"
+bundle_mp="/run/bundles/.${fsname}"
+if grep -q " ${primary_mp} " /proc/mounts ; then
+    mountpoint="${primary_mp}"
+else
+    # Fallback 1: known sibling locations (legacy /mnt/. and v5 /run/bundles/.)
+    mountpoint="$(awk -v fs="${fsname}" '$2 == "/mnt/." fs || $2 == "/run/bundles/." fs { print $2; exit }' /proc/mounts)"
+
+    # Fallback 2: initrd-loaded module — match a squashfs/erofs mount
+    # whose loop backing file lives under the initrd source prefix
+    # reported by `pfs --source-prefix` (e.g. /run/archroot/root_ro/${dir}
+    # for rootaufs2). Restricted to that prefix to avoid spurious matches
+    # from random loops on the system.
+    if [ -z "${mountpoint}" ]; then
+        src_prefix="$(pfs --source-prefix 2>/dev/null)" || src_prefix=""
+        if [ -n "${src_prefix}" ]; then
+            while IFS=' ' read -r mp_loop mp_path mp_fstype mp_rest ; do
+                : "${mp_rest}"
+                case "${mp_fstype}" in
+                    squashfs|erofs) ;;
+                    *) continue ;;
+                esac
+                case "${mp_loop}" in
+                    /dev/loop*) ;;
+                    *) continue ;;
+                esac
+                loop_name="${mp_loop#/dev/}"
+                mp_backing="$(cat "/sys/block/${loop_name}/loop/backing_file" 2>/dev/null)" || continue
+                case "${mp_backing}" in
+                    "${src_prefix}"/*) ;;
+                    *) continue ;;
+                esac
+                mp_base="${mp_path##*/}"
+                if [ "${mp_base}" = "${fsname}" ] || \
+                   [ "${mp_base}" = "${fsname}.${EXT}" ] || \
+                   [ "${mp_base}" = ".${fsname}" ] || \
+                   [ "${mp_base}" = ".${fsname}.${EXT}" ]; then
+                    mountpoint="${mp_path}"
+                    break
+                fi
+            done < /proc/mounts
+        fi
+    fi
+fi
+saved_mode=""
+saved_mountpoint=""
+saved_layer_path=""
+layering_mode="$(detect_layering_mode)"
+if read_layer_state "${fsname}" ; then
+  [ "${saved_mode}" ] && layering_mode="${saved_mode}"
+  [ "${saved_mountpoint}" ] && mountpoint="${saved_mountpoint}"
+fi
+if [ -d "${mountpoint}" ]; then
+  sync
+  if [ "${layering_mode}" = "overlay" ] ; then
+    remove_layer="${mountpoint}"
+    [ "${saved_layer_path}" ] && remove_layer="${saved_layer_path}"
+    deloverlay "${remove_layer}" >/dev/null 2>&1
+    stataufs=$?
+    pfs_debug "pfsunload: layering=overlay mountpoint=${mountpoint} layer=${remove_layer} status=${stataufs}"
+  else
+    # https://github.com/util-linux/util-linux/issues/2309
+    #mountb -t aufs -o remount,del:"${mountpoint}"/ aufs /  2>/dev/null
+    mountb -t aufs -o remount,del$a2"${mountpoint}"/ aufs /  2>/dev/null
+    stataufs=$?
+    pfs_debug "pfsunload: layering=aufs mountpoint=${mountpoint} layer=${mountpoint} status=${stataufs}"
+  fi
+  sync
+ UP(){
+  if [ "${fupdate}" != "no" -a ${stataufs} -eq 0 ] ; then
+	  pfs_update_caches "${mountpoint}" 
+	for script in $(find $(dirname $0) -maxdepth 1 -name "runpfsunload*" -user root) ; do 
+	  $script "${mountpoint}"  & 
+	done
+  fi
+ }
+  losetupb |grep -q "${copyramdir}${fsname}"  && ramfree=yes 
+  UP && umountb -d "${mountpoint}" 2>/dev/null 
+  # Clean up secondary bundle mount if pfsload created one.
+  if [ -n "${bundle_mp:-}" ] && [ "${bundle_mp}" != "${mountpoint}" ] && grep -q " ${bundle_mp} " /proc/mounts ; then
+      UP && umountb -d "${bundle_mp}" 2>/dev/null 
+      rmdir "${bundle_mp}" 2>/dev/null
+  fi
+  status=$?
+  sync
+  rmdir "${mountpoint}" >/dev/null
+  [ ${status} -eq 0 ] && status=${stataufs}
+  [ ${status} -eq 0 ] && remove_layer_state "${fsname}"
+  [ ${status} -gt 0 ] && printf "$(_ 'Unmount \"%s\" failed!')\n" "${fsname}" >&2
+  sync
+else
+  printf "$(_ 'Object \"%s\" not mounted.')\n" "${fsname}" >&2
+  status=22
+fi
+if 	[ $ramfree ] ; then
+	[ $saveram ] || pfsramfree "${fsname}" 
+fi
+
+
+if [ "$status" -ne 0 -a "$status" -ne 22 ] ;then
+#  for a in $( lsof / |awk '{print $9}' |grep "/..*" | grep -Ev "/proc|/sys|/run|/tmp|/dev|/home|\.so\.|\.so$" | sort -u) ; do
+  [ "$verb" ] && for a in $( lsof / |awk '{print $9}' |grep "/..*" | grep -Ev "/proc|/sys|/run|/tmp|/dev|/home" | sort -u) ; do
+    #[ -f "$a" ] || continue
+    [ -x "$a" ] || continue
+    [ -d "$a" ] && continue
+    [ -x  "$mountpoint/$a"	] && FILES="$FILES $a"
+  done
+fi
+
+if [ "$FILES" ] ; then 
+  echo '' ; printf "$(_ 'Files opened from %s:')\n" "$1"
+    for f in $FILES ; do 
+    echo -n $f 
+  [ -f  "$changesDir/$f" ] && echo "$(_ ' - changed')" || echo ''
+  done
+fi
+
+exit ${status}

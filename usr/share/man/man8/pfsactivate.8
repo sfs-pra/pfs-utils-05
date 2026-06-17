@@ -1,0 +1,168 @@
+.TH PFSACTIVATE 8 "2026-04" "pfs-utils-cli" "PFS module tools"
+.SH NAME
+pfsactivate \- mount a PFS module and expose its files via per-file symlinks
+.SH SYNOPSIS
+.B pfsactivate
+.RB [ --persist
+.IR DIR ]
+.IR MODULE.pfs
+.br
+.B pfsactivate
+.B --list
+.br
+.B pfsactivate
+.B --help
+.SH DESCRIPTION
+.B pfsactivate
+loop-mounts
+.IR MODULE.pfs
+read-only under
+.I /run/pfs-utils/symlink-activations/<module>/mount
+and then walks every regular file inside it. For each path
+.I /<rel>
+the existing target on the host is renamed to
+.IB \(.pfs.org. <basename>
+and replaced with a symlink pointing into the mounted module.
+
+This is the legacy Porteus "Neko" symlink-injection model: it works on any
+rootfs (aufs, overlay, ext4) without kernel support, but symlinks are
+.B not
+transparent (visible via
+.BR readlink (1)
+and
+.B st_dev
+checks), and a few system-critical paths are explicitly refused. On AUFS
+roots prefer
+.BR pfsload (8)
+for system-wide kernel-level transparency. On OverlayFS roots use
+.BR pfsrun (8)
+for runtime execution;
+.BR pfsexec (8)
+is the lower-level namespace helper behind that flow.
+.PP
+.B pfsactivate
+is marked
+.B EXPERIMENTAL
+in its inline help. Persistence in
+.I changes=
+mode is dangerous: deactivate before reboot to avoid leaving dangling
+symlinks across boots.
+.SH OPTIONS
+.TP
+.B --list
+Print one
+.IR module<TAB>filecount
+line for every currently activated module.
+.TP
+.BR --persist " " \fIDIR\fR
+Use
+.IR DIR
+as the persistence root instead of
+.IR /run .
+State directory becomes
+.IR DIR/pfs-utils/symlink-activations/<module>/ .
+.TP
+.BR -h ", " --help
+Show the experimental warning and inline help.
+.SH PROTECTED PATHS
+The following targets are refused by the activator with exit code
+.B 1 :
+.IR /etc/passwd ", " /etc/shadow ", " /etc/sudoers ", " /etc/fstab ", " /etc/group
+and anything under
+.IR /dev , /proc , /sys , /boot .
+Activation also refuses to overwrite a directory that exists on the host \(em
+only files (or existing symlinks) are replaced.
+.SH STATE LAYOUT
+.TP
+.I /run/pfs-utils/symlink-activations/<module>/mount/
+read-only loop-mount of the module.
+.TP
+.I /run/pfs-utils/symlink-activations/<module>/state
+list of activated paths, oldest first; used by
+.BR pfsdeactivate (8)
+to roll back in reverse order.
+.TP
+.I /run/pfs-utils/symlink-activations/<module>/files.list
+ephemeral
+.BR find (1)
+output during activation; removed on success.
+.TP
+.IB <parent_dir>/.pfs.org. <basename>
+backup of the original host file (if any), restored by
+.BR pfsdeactivate (8).
+.SH BEHAVIOUR ON FAILURE
+On any error mid-activation
+.B pfsactivate
+walks
+.I state
+in reverse, restores original files from
+.IB .pfs.org. *
+backups, removes the loop-mount and the state directory. Cleanup runs from
+an
+.B EXIT
+trap so even SIGINT/SIGTERM lead to a consistent rollback.
+.SH PRIVILEGES
+Must be run as root. The script exits 7 if invoked as a regular user.
+.SH SUPPORTED FORMATS
+The module's filesystem must be
+.BR squashfs " or " erofs
+(detected via
+.B fs_type
+from
+.BR pfs (8) ).
+Anything else is rejected with exit code
+.B 3 .
+.SH EXIT STATUS
+.TP
+.B 0
+activation succeeded.
+.TP
+.B 1
+already activated, refusing to touch a protected path, backup conflict, or
+help/list mode.
+.TP
+.B 2
+module file not found.
+.TP
+.B 3
+unsupported module filesystem.
+.TP
+.B 4
+state directory or mount setup failed.
+.TP
+.B 5
+file enumeration / link creation failed.
+.TP
+.B 7
+not root.
+.SH EXAMPLES
+.PP
+Activate a module:
+.RS
+.nf
+pfsactivate /modules/extras-2026.04-sf01.pfs
+.fi
+.RE
+.PP
+List currently active modules:
+.RS
+.nf
+pfsactivate --list
+extras-2026.04-sf01    142
+mytools-1.0-sf02       19
+.fi
+.RE
+.PP
+Activate with custom persistence root (test rig):
+.RS
+.nf
+pfsactivate --persist /tmp/pfs-test /modules/x.pfs
+.fi
+.RE
+.SH SEE ALSO
+.BR pfsdeactivate (8),
+.BR pfsexec (8),
+.BR pfsload (8),
+.BR pfsrun (8),
+.BR pfs-utils (8),
+.BR readlink (1)

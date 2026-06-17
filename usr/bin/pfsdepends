@@ -1,0 +1,137 @@
+#!/bin/sh
+#Read depends of PFS packages
+# Ensure pfs-utils binaries are resolvable via which(1) when invoked from a
+# restricted PATH (e.g. systemd, GUI, sudo without --preserve-env).
+PATH="/usr/bin:/usr/sbin:${PATH}"
+export PATH
+. $(which pfs)
+
+pfsdepends_mount_index_rows() {
+  pfsdir_mount_iter_indexes | while IFS= read -r idx_line; do
+    idx_container="$(printf '%s\n' "${idx_line}" | cut -f1)"
+    idx_submodule="$(printf '%s\n' "${idx_line}" | cut -f2)"
+    idx_dir="$(printf '%s\n' "${idx_line}" | cut -f3)"
+    [ -n "${idx_submodule}" ] || continue
+    [ -n "${idx_dir}" ] || continue
+    printf '%s\t%s\t%s\n' "${idx_container}" "${idx_submodule}" "${idx_dir}"
+  done
+}
+
+pfsdepends_mount_packages() {
+  pfsdepends_mount_index_rows | while IFS= read -r idx_line; do
+    idx_container="$(printf '%s\n' "${idx_line}" | cut -f1)"
+    idx_submodule="$(printf '%s\n' "${idx_line}" | cut -f2)"
+    if [ -n "${idx_container}" ]; then
+      printf '%s:%s\n' "${idx_container}" "${idx_submodule}"
+    else
+      printf '%s\n' "${idx_submodule}"
+    fi
+  done | sort -u
+}
+
+pfsdepends_mount_depends_for() {
+  identity="$1"
+  index_dir="$(pfsdir_mount_find "${identity}" 2>/dev/null || true)"
+  [ -n "${index_dir}" ] || return 1
+  [ -f "${index_dir}/pfs.depends" ] || return 1
+  cat "${index_dir}/pfs.depends"
+}
+
+if [ "${PFSDEPENDS_SOURCE_ONLY:-0}" = "1" ]; then
+  return 0 2>/dev/null || exit 0
+fi
+
+for arg in "$@"
+do
+  case "${arg}" in
+    "-m" | "--mount" | "--mount-packages") readdir="mount";;
+    "-i" | "--install" | "--install-packages") readdir="install";;
+    "-a" | "--all") alldeps="on";;
+    "-f" | "--file" ) readfile="on";;
+    "-p" | "--print-all" ) printall="on";;
+    "-"*[A-Za-z]*) echo "$(basename "$0"): invalid option -- '$(echo ${arg} | tr -d '-')'" >&2; exit 1;;
+    *) [ "${readfile}" != "on" ] && namepacks="${namepacks}${IFS}${arg}" || infile="${arg}"; readfile="off";;
+  esac
+done
+if [ "${infile}" ]; then
+  if [ -f "${infile}" ]; then 
+    fsfile="$(realpath "${infile}")"
+  else
+    echo "File \"${infile}\" not found!" >&2; exit 1
+  fi
+fi
+[ -d "${PFSDIR_MOUNT_NEW}" -o -d "${PFSDIR_MOUNT_LEGACY}" ] && packslistM="$(pfsdepends_mount_packages)"
+[ -d "${PFSDIR}/install/" ] && packslistI="$(find "${PFSDIR}/install/" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null)"
+
+if [ "${fsfile}" ]; then
+  disktypeb "${fsfile}" | grep -Eqi "squashfs.*version[[:space:]]*4\\."
+  if [ $? -gt 0 ]; then
+    echo "File \"${fsfile}\" is not PFS!" >&2; exit 1
+  fi
+  packslistF="$(unsquashfs -l "${fsfile}" 2>/dev/null | sed -n \
+    -e "s#^.*${PFSDIR_MOUNT_NEW}/\([^/][^/]*/[^/][^/]*\)/pfs\\.files$#\1#p" \
+    -e "s#^.*${PFSDIR_MOUNT_LEGACY}/\([^/][^/]*\)/pfs\\.files$#\1#p" | \
+    while read pack; do
+      [ -n "${pack}" ] || continue
+      case "${pack}" in
+        */*) printf '%s\n' "${pack%/*}:${pack#*/}" ;;
+        *) printf '%s\n' "${pack}" ;;
+      esac
+    done | sort -uf)"
+  tmpdir="$(mktemp -d)"
+  mkdir -p "${tmpdir}"
+  depslist="`unsquashfs -l "${fsfile}" 2>/dev/null | sed -n \
+    -e "s#^.*${PFSDIR_MOUNT_NEW}/\([^/][^/]*/[^/][^/]*\)/pfs\\.depends$#\1#p" \
+    -e "s#^.*${PFSDIR_MOUNT_LEGACY}/\([^/][^/]*\)/pfs\\.depends$#\1#p" | sort -u | while read pack
+  do
+    [ -n "${pack}" ] || continue
+    if echo "${pack}" | grep -q '/'; then
+      container="${pack%/*}"
+      submodule="${pack#*/}"
+      extract_rel="${PFSDIR_MOUNT_NEW}/${container}/${submodule}/pfs.depends"
+      read_path="${tmpdir}/${pack}${PFSDIR_MOUNT_NEW}/${container}/${submodule}/pfs.depends"
+    else
+      extract_rel="${PFSDIR_MOUNT_LEGACY}/${pack}/pfs.depends"
+      read_path="${tmpdir}/${pack}${PFSDIR_MOUNT_LEGACY}/${pack}/pfs.depends"
+    fi
+    unsquashfs -d "${tmpdir}/${pack}" "${fsfile}" -ef "${extract_rel}" -n >/dev/null 2>&1
+    cat "${read_path}" 2>/dev/null
+  done | sed 's/[ \t]*$//' | sort -u`"
+  rmdir "${tmpdir}" 2>/dev/null
+  packslist="$(echo "${packslistF}${IFS}${packslistM}${IFS}${packslistI}" | sort -u)"
+else
+  packslist="$(echo "${packslistM}${IFS}${packslistI}" | sort -u)"
+  if [ "${readdir}" != "install" ]; then
+    if [ "${namepacks}" != "" ]; then
+      readlistM="$(echo "${namepacks}" | while read readpack; do [ "${readpack}" != "" ] && echo "${packslistM}" | grep -F -x "${readpack}"; done | sort -u)"
+    else
+      readlistM="${packslistM}"
+    fi
+    dplistM="`echo "${readlistM}" | while read package; do
+      [ "${package}" != "" ] || continue
+      pfsdepends_mount_depends_for "${package}" 2>/dev/null
+    done`"
+  fi
+  if [ "${readdir}" != "mount" ]; then
+    if [ "${namepacks}" != "" ]; then
+      readlistI="$(echo "${namepacks}" | while read readpack; do [ "${readpack}" != "" ] && echo "${packslistI}" | grep -F "${readpack}"; done | sort -u)"
+    else
+      readlistI="${packslistI}"
+    fi
+    dplistI="`echo "${readlistI}" | while read package; do
+      [ -f "${PFSDIR}/install/${package}/pfs.depends" ] && echo "$(cat "${PFSDIR}/install/${package}/pfs.depends")"
+    done`"
+  fi
+  depslist="$(echo "${dplistM}${IFS}${dplistI}" | sed 's/[ \t]*$//' | sort -u)"
+fi
+
+if [ "${alldeps}" != "on" ]; then
+  allcheckdeps="$(echo "${depslist}" | grep -v '^[[:space:],\t]*$' | while read checkpack; do
+  if [ "$(echo "${checkpack}" | sed 's/ \/ /\n/g' | while read varpack; do echo "${packslist}" | grep -q -F "${varpack}" 2>/dev/null && echo "${varpack}" && break; done)" = "" ]; then [ "${printall}" != "on" ] && echo "$(echo "${checkpack}" | sed 's/^.* \/ //g' )" || echo "${checkpack}"; fi; done | grep . | sed 's/[ \t]*$//' | sort -uf)"
+else
+  if [ "${printall}" != "on" ]; then allcheckdeps="$(echo "${depslist}" | sed 's/[ \t]*$//;s/^.* \/ //g' | sort -uf | grep -v '^[[:space:],\t]*$')"
+  else allcheckdeps="$(echo "${depslist}" | sed 's/[ \t]*$//' | sort -uf | grep -v '^[[:space:],\t]*$')"; fi
+fi
+[ "${allcheckdeps}" != "" ] && echo "${allcheckdeps}"
+
+exit 0

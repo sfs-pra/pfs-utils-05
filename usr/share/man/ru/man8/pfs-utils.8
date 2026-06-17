@@ -1,0 +1,301 @@
+.TH pfs-utils 8  "marсh, 2017" "version 3.*" "PFS-UTILS"
+.SH NAME
+pfs-utils \- набор скриптов для управления squashfs модулями в live linux дистрибутивах
+
+.SH DESCRIPTION
+Коллекция скриптов для создания, слияния, извлечения, подключения и отключения модулей PFS.
+.TP
+\- mkpfs \- создание и слияние модулей
+.TP
+\- pfsextraxt \- распаковка пакетов из модуля и их установка
+.TP
+\- pfsload \- Только AUFS: подключение модулей (каталогов и образов) в корневую файловую систему
+.TP
+\- pfsunload \- Только AUFS: отключение модулей от корневой файловой системы
+.TP
+\- pfsuninstall \- пофайловое удаление из системы
+.TP
+\- pfsrebuild \- Только AUFS для runtime-пересборки загруженных модулей; пересборка установленных или offline-записей реестра отдельна
+.TP
+\- sync2layer \- создание нового слоя и перенос туда изменений из верхнего RW-слоя
+.TP
+\- pfsinfo \- список пакетов в модуле
+.TP
+\- pfs \- библиотека скриптов pfs-utils
+
+.SH V5 NEW VERBS
+Для поведения версии 5 добавлены функции библиотеки
+.B pfs
+, которые используются runtime-обёртками.
+
+.SS pfs _detect_initrd
+.B pfs _detect_initrd
+Определяет текущий initrd/boot stack.
+
+.TP
+Usage
+.BI "pfs _detect_initrd"
+
+.TP
+Output (exactly one line)
+Функция печатает одно из значений:
+
+.TP
+.B rootaufs2
+\- rootaufs2-style AUFS stack
+.TP
+.B uird
+\- UIRD stack
+.TP
+.B livekit
+\- livekit stack
+.TP
+.B porteus
+\- Porteus stack
+.TP
+.B unknown
+\- fallback when no markers match
+
+.TP
+Return
+.RS
+.I 0
+при успешном завершении.
+.RE
+
+.TP
+Notes
+Логика определения работает на внутренних сигнатурах и может меняться только при изменениях реализации.
+
+.SS pfs addlayer_dispatch
+.B pfs addlayer_dispatch
+Вспомогательная функция для внутреннего добавления слоёв AUFS и настройки приватного OverlayFS namespace. Она не добавляет поддержку системного горячего подключения или отключения на OverlayFS.
+
+.TP
+Usage
+.BI "pfs addlayer_dispatch " FILE " [SESSION]"
+
+Если передан только один аргумент, он трактуется как
+.B FILE
+и номер сессии по умолчанию
+.B 0
+.
+
+.TP
+Layering selection
+.TP
+.B PFS_LAYERING
+Если задано
+.BR aufs " или " overlay , используется сразу это значение.
+.TP
+Unset
+Вызывается
+.B _detect_initrd
+и выполняется привязка:
+.BR uird / livekit " к overlay, " rootaufs2 / porteus / unknown " к aufs.
+
+.TP
+Return values
+.TP
+.I 0
+при успехе, пишет путь смонтированного layer
+.TP
+.I 8
+для неизвестного режима слойности.
+.TP
+Другие коды завершения
+пробрасываются из
+.B addlayer_aufs
+или настройки приватного OverlayFS namespace.
+.PP
+Только AUFS: горячее подключение/отключение модулей к корню системы не
+поддерживается на OverlayFS; для OverlayFS используйте
+.BR pfsrun (8).
+
+.SS mkpfs-erofs
+.B mkpfs-erofs
+Создание образа модуля EROFS.
+
+.TP
+Usage
+.BI "mkpfs-erofs [OPTIONS] SOURCE_DIR"
+
+.TP
+Options
+.TP
+.B -o, --out-file PATH
+Путь для выходного файла. По умолчанию
+.B ./<source>.pfs
+.TP
+.B -h, --help
+Показать справку и выйти.
+.TP
+Additional args
+Все дополнительные аргументы передаются в
+.B mkfs.erofs
+без изменений.
+
+.TP
+Compression
+Если опции сжатия не заданы, обёртка добавляет
+.B -zlz4hc
+по умолчанию.
+
+.TP
+Examples
+.RS
+.nf
+mkpfs-erofs ./busybox-rootfs
+mkpfs-erofs --out-file busybox.pfs ./busybox-rootfs
+mkpfs-erofs --threads=4 ./busybox-rootfs
+.fi
+.RE
+
+.TP
+Exit status
+При ошибках синтаксиса или вызова возвращает
+.B 1
+и
+.B 127
+если
+.B mkfs.erofs
+недоступен; в остальных случаях возвращает код
+.B mkfs.erofs
+.
+
+.SH ADDITIONAL TOOLS
+Следующие утилиты входят в pfs-utils и дополняют основной поток загрузки и выгрузки.
+.PP
+.B pfsrun
+\(em основной пользовательский запускатель для runtime-исполнения на OverlayFS. Он запускает приложение в приватном mount namespace с PFS-модулем поверх корня системы.
+Используйте его на overlay-root системах, где AUFS dynamic-add недоступен и приемлема per-process изоляция.
+.PP
+.B pfsexec
+\(em низкоуровневый overlay namespace helper, используемый
+.BR pfsrun (8) .
+.PP
+.B pfsactivate / pfsdeactivate
+\(em opt-in методика symlink-injection по паттерну Porteus neko. Loop-монтирует модуль read-only и создаёт системные symlinks для каждого файла. Откат выполняется через
+.BR pfsdeactivate (8).
+ЭКСПЕРИМЕНТАЛЬНО: symlinks не прозрачны (O_NOFOLLOW, st_dev); на aufs-root предпочтительнее
+.BR pfsload (8)
+для kernel-level прозрачности.
+.SH MOUNT INDEX LAYOUT
+Канонический индекс подключённых модулей v5 хранится в
+.BR /var/lib/pfs/mount/<container-module>/<submodule>/ .
+Каждый каталог индекса содержит
+.BR pfs.files ,
+.BR pfs.dirs.empty ,
+.BR pfs.specs ,
+и может содержать
+.BR pfs.depends .
+.PP
+Стабильная identity tuple это
+.BR "(container-module, submodule)" .
+Для отображения и поиска используется квалифицированная форма
+.B container:submodule
+когда container известен. Индекс одиночного модуля по умолчанию использует identity
+.B <module>/<module>
+.
+.PP
+Одинаковые имена submodule в разных container допустимы. В таком случае вызывающий код должен использовать
+.B container:submodule
+, а неквалифицированный duplicate должен завершаться как ambiguous. Он не должен выбирать случайное совпадение.
+.PP
+Совместимое зеркало v4 остаётся в
+.BR /etc/packages/mount/<submodule>/ .
+Этот плоский путь используется только как fallback для старых индексов и старых потребителей. Он не может безопасно различать duplicate names, потому что в нём нет container component.
+.PP
+Текущие lookup tools сначала читают canonical indexes и сохраняют legacy fallback. Новые metadata должны писаться в canonical two-level layout и зеркалироваться только для compatibility.
+.PP
+.B pfsmigrate-mount
+копирует legacy flat mount indexes из
+.BR /etc/packages/mount/<submodule>/
+в
+.BR /var/lib/pfs/mount/legacy/<submodule>/ .
+Мигрированные записи используют provenance
+.B legacy:<submodule>
+. Команда сохраняет legacy source directories для fallback readers, идемпотентна при совпадающем destination content и сообщает non-destructive conflict, если destination content отличается. Legacy flat paths всё ещё не могут различать duplicate submodule names и не становятся canonical source of truth.
+.SH ENVIRONMENT
+.TP
+.B PFS_LAYERING
+Если установлено в
+.B aufs
+или
+.B overlay
+оно переопределяет автоопределение и принудительно включает режим
+.B addlayer_dispatch
+.
+Значение overlay относится к приватным namespace и build-time helpers; оно не включает системное горячее подключение или отключение на OverlayFS.
+Если переменная не задана, используется определение initrd.
+
+.SH DEPRECATION
+.TP
+.B addlayer
+Устаревшая функция
+.B addlayer
+сохраняется для совместимости и теперь делегирует вызов в
+.B addlayer_dispatch
+.
+
+.TP
+Warning behavior
+Предупреждение на stderr выводится один раз для каждого вызывающего имени при
+непосредственном использовании
+.B addlayer
+
+.B Message:
+.RS
+.nf
+pfs-utils: DEPRECATED: direct addlayer() call from <caller>. Use addlayer_dispatch(). See pfs-utils.8.
+.fi
+.RE
+
+.TP
+Record file
+Если
+.B XDG_RUNTIME_DIR
+установлена и доступна для записи, состояние предупреждений хранится в
+.B $XDG_RUNTIME_DIR/pfs-utils.deprecations
+; в противном случае предупреждение печатается при каждом прямом вызове.
+
+.SH V4 SIBLINGS
+Для отката в поведение v4 поставляются совместимые обёртки.
+.TP
+.B pfsload-v4
+Запускает загрузку по совместимой с v4 логике.
+.TP
+.B pfsunload-v4
+Запускает выгрузку по совместимой с v4 логике.
+
+.TP
+Current package status
+В этом снимке отсутствует версионированная библиотека
+.B pfs-v4
+.
+
+.SH EXIT STATUS
+Все утилиты возвращают нулевой код при успешном завершении.
+
+.SH AUTHOR
+forum.puppyrus.org team (sfs, zay, DdShuruck)
+.TP
+Wiki:   http://wiki.puppyrus.org/puppyrus/pr218/pfs3
+.TP
+Forum:  http://forum.puppyrus.org/index.php?board=30.0
+
+.SH SEE ALSO
+.BR mksquashfs (1),
+.BR pfsexec (8),
+.BR pfsrun (8),
+.BR pfsactivate (8),
+.BR pfsdeactivate (8),
+.BR modman (8)
+
+.SH TRANSLATION NOTE
+Перевод выполнен по английскому man-источнику версии v5 (pfs-utils.8).
+Контрольная сумма исходника:
+.RS
+.B SHA256:
+.RI 2f53ec6c3a44a478e9aa52b34f510f3cd4de99d91f7924bde48e48ad3758b544
+.RE

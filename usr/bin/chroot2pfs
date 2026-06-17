@@ -1,0 +1,360 @@
+#!/bin/bash
+# Description: create pfs module from changes in chroot
+# Author : Alexandr Betkher (betcher) <http://magos-linux.ru>
+#260123 sfs 
+
+PATH="/usr/bin:/usr/sbin:${PATH}"
+export PATH
+if ! command -v pfs >/dev/null 2>&1; then
+    PATH="$(dirname "$0"):${PATH}"
+    export PATH
+fi
+. "$(which pfs)"
+ 
+CHROOT="chroot"
+TRIM_CHROOT="yes"
+WH=""
+buildDir=$SYSMNT/$$-tmp
+filter="??*" # нужен для пересборки сабмодуля из кoнтейнера, чтоб не собирать все что в контейнере,  нужно приделать ключ. Пока не важно.
+fast_alg=""
+LAYERING_MODE=""
+
+HLP () {
+echo "Usage: 	$(basename $0) <$(basename $0) keys> <--command>  - command which will be execute in  chroot"
+echo "				$(basename $0) <$(basename $0) keys> <--script> - script which will be copied to chroot and run" 
+echo "				$(basename $0) module.$EXT  - rebuild module" 
+echo "$(basename $0) keys:"
+echo "-h | --help - this help"
+echo "$(_ '--command 	- command to execute inside chroot; this parameter must be last on the command line')"
+echo "$(_ 'Run a program with a different locale: --command LANG=ru_RU.UTF-8 program. Works only with "-c chroot".')"
+echo "$(_ '--script 	- script copied into chroot and executed there')"
+echo "$(_ '-m | --mask 	- mask for system bundles used to build the aufs root for chroot')"
+echo "$(_ '--mlist 	- list of modules and directories used to build aufs; separator is ","')"
+echo "$(_ 'You can use "#" to disable an entry. Example: --mlist 1.${EXT},#2.${EXT},3.${EXT}')"
+echo "$(_ '--flist 	- list of modules and directories read from a file; "#" disables an entry')"
+echo "$(_ 'Create a list of modules from dir: find /pth/dir -name *.$EXT | sort | awk '\''{print "#"$0}'\'' > flist.lst')"
+echo "$(_ '-f | --fast 	- build module with faster compression')"
+echo "$(_ '-n | -o | --name 	- name of the output module or directory (directory when no .$EXT suffix is used)')"
+echo "$(_ '-c | --contaner 	- container type: "chroot" or "nspawn" (systemd-nspawn required on both host and guest)')"
+echo "$(_ '--boot - only for -c nspawn. See systemd-nspawn -b')"
+echo "$(_ '--notrim 	- keep obviously unnecessary files in the result (cache etc.)')"
+echo "$(_ '--wh 	- keep AUFS whiteout files')"
+echo "$(_ '--bind 	- list of directories to mount into chroot in the format /SOURCE/DIR1::/TARGET/DIR1,/SOURCE/DIR2::/TARGET/DIR2')"
+echo "$(_ '--overlay 	- use OverlayFS for the chroot root layer (default)')"
+echo "$(_ '--aufs 	- force AUFS for the chroot root layer')"
+echo "$(_ '--nomod 	- do not create a module from the resulting changes')"
+echo
+echo "$(_ 'Output: NAME without the .pfs suffix creates a directory (default).')"
+echo "$(_ '        NAME with the .pfs suffix builds a single .pfs module.')"
+echo "$(_ '-X 	- allow access to the current GUI session (X11 and Wayland sockets). Useful for GUI applications inside chroot. Recommended with "-c nspawn".')"
+echo "$(_ 'The host kernel architecture must match the guest architecture (i686 or x86_64). The host distribution itself may differ.')"
+echo
+echo "$(_ 'EXAMPLES')"
+echo "======="
+echo "$(_ 'Build the mc module into the ModuleDIR directory:')"
+echo "	chroot2pfs -o ModuleDIR  --flist /tmp/module.list --command apt install mc"
+echo "$(_ 'Run pcmanfm from a guest system built from modules 1 and 3 (1 is in the upper AUFS layer and overrides 2):')"
+echo "	chroot2pfs --nomod -X -c chroot --mlist /pth/1.$EXT,\\
+#2.\\
+3.$EXT --command pcmanfm"
+echo
+exit 
+}
+
+umount_all () {
+for tm in {sys,proc,dev}; do
+    while (grep -q $root_br/$tm /proc/mounts ) ; do
+        umount $root_br/$tm || umount -l $root_br/$tm
+    done
+done
+}
+
+get_layers () {
+layers=""
+local layers
+[ "$MASK" ] && layers=$(aufs-n --hidetop  --reverse --raw '$bname_source $bundle' |grep "$MASK" | awk '{print $2}')
+#[ "$MLIST" ] && layers="$layers $(echo "$MLIST" |sed 's/[\,]/ /g')"
+[ "$MLIST" ] && layers="$layers $(echo "$MLIST" | sed 's/#[^,]\+,\?//g; s/,$//' |sed 's/[\,]/ /g')"
+#[ "$FLIST" ] && layers="$layers $(cat $FLIST)"
+[ "$FLIST" ] && layers="$layers $(grep -v '^#' $FLIST)"
+[[ -z  $layers ]] && layers=$(aufs-n --hidetop --reverse --raw '$bname_source $bundle'  | awk '{print $2}')
+for item in $layers ; do 
+[ -e $item ] && echo $item || exitmsg "	layer:   $item is not exists" 4
+done
+}
+
+append_bind_target () {
+    if [ -z "$bind_targets" ] ; then
+        bind_targets="$1"
+    else
+        bind_targets="${bind_targets}
+$1"
+    fi
+}
+
+unmount_binds () {
+    [ -n "$bind_targets" ] || return 0
+
+    printf '%s\n' "$bind_targets" |
+    awk 'NF { lines[NR]=$0 } END { for (i=NR; i>=1; i--) print lines[i] }' |
+    while IFS= read -r bind_target ; do
+        [ -n "$bind_target" ] || continue
+        umount "$bind_target"
+    done
+}
+
+delete_layer () {
+    echo "delaufs $nn"
+    delaufs $nn || delaufsl $nn
+}
+
+argslist="$@"
+if  echo $argslist |grep -q "\-*command.*" ; then
+    command="$(printf '%s\n' "$*" | sed 's/^.*\-*command//')"
+    argslist="$(printf '%s\n' "$*" | sed 's/\-*command.*$//')"
+fi
+
+for arg in $argslist
+do
+  case "${arg}" in
+    "-h" | "--help" ) HLP;;
+    "-n" | "-o" | "--name") name="yes";;
+    "-f" | "--fast") fast_alg="-f" ;;
+    "-s" | "--script" ) script="yes" ;;
+    "-m" | "--mask") mask="yes" ;;
+    "--builddir") bdir="yes" ;; # for rebuild only
+    "-b" | "--bind") bind="yes" ;;
+    "--mlist" ) mlist="yes" ;;
+    "--flist" ) flist="yes" ;;
+    "-c" | "--contaner" ) contaner=yes;;
+    "--overlay") LAYERING_MODE="overlay" ;;
+    "--aufs")    LAYERING_MODE="aufs" ;;
+    "--notrim" ) TRIM_CHROOT="";;
+    "-w" | "--wh" ) WH="--wh";;
+    "-X" ) X="yes";;
+    "--nomod" ) NOMOD="yes";;
+    "--boot" ) BOOT="-b";;
+    "-"*[A-Za-z]*) echo "$(basename "$0"): invalid option -- '$(echo ${arg} | tr -d '-')'" >&2; exit 1;;
+    *) if [ "${name}" == "yes" ]; then NAME="${arg}"
+		elif [ "${mlist}" == "yes" ]; then MLIST="${arg}"
+		elif [ "${flist}" == "yes" ]; then FLIST="${arg}"
+		elif [ "${script}" == "yes" ]; then SCRIPT="${arg}"
+		elif [ "${bdir}" = "yes" ]; then   buildDir="$(readlink -e ${arg})/$$-tmp"
+		elif [ "${contaner}" == "yes" ]; then CONTANER="${arg}" 
+        elif [ "${mask}" == "yes" ]; then MASK="${arg}"
+        elif [ "${bind}" == "yes" ]; then BIND="${arg}"
+        else modules="${arg} ${modules}" ; fi
+        mlist="no"; flist="no"; name="no";  mask="no"; bdir="no"; bind="no"; script="no"; contaner="no";;
+  esac
+done
+
+# rebuild modules
+if  $(file $(echo $modules |awk '{print $1}') 2>/dev/null | grep -q quashfs); then
+    for rmod in $modules ; do
+    if ! unsquashfs -l $rmod | grep -q .*/var/lib/chroot2pfs/.  ; then
+			exitmsg "$(printf "$(_ 'Module %s was made by another program')" "$rmod")" 1 noexit
+			continue
+	fi
+    mkdir -p $(dirname $buildDir)
+    printf "$(_ 'rebuilding %s in %s')\n" "$rmod" "$buildDir"
+    u2pfs_current=$(realpath $0)
+    unsquashfs -d $buildDir "$rmod" -e /var/lib/chroot2pfs -n >/dev/null
+    mv $buildDir/var/lib/chroot2pfs/* $buildDir  # || exitmsg "Module $rmod was made by another program" 7
+    rm -fr $buildDir/var
+    CPWD=$(pwd)
+    cd $buildDir
+    for mod in $(find ./ -type d -name "??*"); do
+		SCRIPT=$(readlink -e $(ls -1 ./$mod/*.sh 2>/dev/null ) 2>/dev/null ) ; [ $SCRIPT ] && SCRIPT="--script $SCRIPT"
+        $u2pfs_current $(echo $(cat $mod/cmdline) $SCRIPT )  | tee ./urpm2pfs.out
+        module=$(cat ./urpm2pfs.out | tail -n1)
+        mv $CPWD/$(basename $module) $CPWD/$(basename $module).old 2>/dev/null
+        mv $module ${CPWD}/
+    done
+    cd $CPWD
+    rm -rf $buildDir
+    newmods="$(echo $CPWD/$(basename $module)) $newmods"
+    done
+    echo "$newmods"
+    exit
+fi
+
+allow_only_root
+
+# Determine layering backend: explicit flag > default overlay
+if [ -z "$LAYERING_MODE" ] ; then
+    LAYERING_MODE="overlay"
+fi
+
+[ $CONTANER ] &&  CHROOT="$CONTANER"
+
+printf "$(_ 'Using container: %s (layering: %s)')\n" "$CHROOT" "$LAYERING_MODE"
+# Имя обязательно, так как зацепиться не за что
+[ $NOMOD ] && NAME=nomod
+[ $NAME ] || read -p "$(_ 'Please enter name for output directory (add .pfs suffix to build a module file): ')" NAME
+[ -f "${NAME}" ] && exitmsg "$(printf "$(_ 'Output file "%s" already exists')" "$NAME")" 6
+[ -d "${NAME}" ] && exitmsg "$(printf "$(_ 'Output directory "%s" already exists')" "$NAME")" 6
+
+#make root aufs
+if [ "$LAYERING_MODE" = "overlay" ] ; then
+    if [ -z "$MASK" ] && [ -z "$MLIST" ] && [ -z "$FLIST" ] ; then
+        root_br="$(mkoverlay)" || exitmsg "mkoverlay error" 2
+    else
+        _layers="$(get_layers)"
+        # shellcheck disable=SC2086
+        root_br="$(mkoverlay_chroot $_layers)" || exitmsg "mkoverlay_chroot error" 2
+    fi
+    nn="$(echo "$root_br" | sed -n 's/^.*aufs\([0-9][0-9]*\)$/\1/p')"
+else
+    root_br="$(mkaufs || exitmsg "mkaufs error" 2)"
+    nn="$(echo "$root_br" | sed -n 's/^.*aufs\([0-9][0-9]*\)$/\1/p')"
+    for  i in $(get_layers) ;do
+        eval addlayer "$nn" "$i" "$devnull" || exitmsg "can't insert layer to aufs $nn" 5
+    done
+fi
+[ -d "$root_br" ] || exitmsg "$(_ 'error mounting root')" 3
+printf "$(_ 'layer container number: %s')\n" "$nn"
+
+PFS_CHROOT_PS1='\[\033[44;97m\][chroot] \u@\h:\w\$ \[\033[0m\] '
+PFS_NSPAWN_PS1='\[\033[44;97m\][nspawn] \u@\h:\w\$ \[\033[0m\] '
+
+if [ $CHROOT == "chroot" ] ; then
+mkdir -p $root_br/{dev,proc,sys,tmp}
+for tm in {dev,proc,sys}; do
+    mount -o bind "/$tm" "$root_br/$tm"
+done
+fi
+
+#сохраняем в модуль $@ для последующих пересборок
+#надо подумать что еще полезно сохранить
+#cp /etc/resolv.conf $root_br/etc/resolv.conf # у Антона было, у меня без этого работает
+mkdir -p $root_br/var/lib/chroot2pfs/$(basename "${NAME%.$EXT}")
+date > $root_br/var/lib/chroot2pfs/$(basename "${NAME%.$EXT}")/date
+printf '%s\n' "$*" > $root_br/var/lib/chroot2pfs/$(basename "${NAME%.$EXT}")/cmdline
+if [ "$SCRIPT" ] ; then
+	[ -f  "$root_br/var/lib/chroot2pfs/$(basename "${NAME%.$EXT}")/$(basename $SCRIPT)" ]  || cp  $SCRIPT  $root_br/var/lib/chroot2pfs/$(basename "${NAME%.$EXT}")/
+	chmod +x $root_br/var/lib/chroot2pfs/$(basename "${NAME%.$EXT}")/$(basename $SCRIPT) 
+fi
+
+if [ "$BIND" ] ; then
+bind_targets=""
+binds="$(echo "$BIND" |sed 's/[\,]/ /g')"
+for bnd in $binds ; do
+	extdir=$(echo $bnd |sed 's/::/#/' |cut -d "#" -f1)
+	indir="$root_br/$(echo $bnd |sed 's/::/#/' |cut -d "#" -f2)"
+	mkdir -p "$indir"
+	mount -o bind "$extdir" "$indir"
+    append_bind_target "$indir"
+done
+ fi
+
+if [ "$X" == "yes" ] ; then
+    if [ -n "${DISPLAY:-}" ] && command -v xhost >/dev/null 2>&1 && ! xhost |grep -q "LOCAL:" ; then
+        xhost +local:
+        remove_X_perm=yes
+    fi
+    gui_uid="${SUDO_UID:-}"
+    case "$gui_uid" in
+        ''|*[!0-9]*) gui_uid="$(id -u "${SUDO_USER:-${USER:-root}}" 2>/dev/null || id -u)" ;;
+    esac
+    if [ -d "/run/user/${gui_uid}" ] ; then
+        gui_runtime_target="$root_br/run/user/${gui_uid}"
+        mkdir -p "$gui_runtime_target"
+        mount -o bind "/run/user/${gui_uid}" "$gui_runtime_target"
+        append_bind_target "$gui_runtime_target"
+    fi
+fi
+
+MACHINE_NAME="$(printf '%s' "${NAME%.$EXT}" | tr -c 'A-Za-z0-9.-' '-' | sed 's/^[^A-Za-z0-9]/pfs-/; s/-*$//')"
+[ -n "$MACHINE_NAME" ] || MACHINE_NAME="pfs-container"
+
+if [ $CHROOT == "nspawn" ] ; then
+md5sum /bin/bash | awk '{print $1}' > $root_br/etc/machine-id #  nspawn do not works without machine-id
+#[ "$SCRIPT" ] || systemd-nspawn -D $root_br   -M ${NAME%.$EXT} --setenv=DISPLAY="$DISPLAY" --bind=/tmp/.X11-unix $command 
+#[ "$SCRIPT" ] && systemd-nspawn -D $root_br   -M ${NAME%.$EXT} --setenv=DISPLAY="$DISPLAY" --bind=/tmp/.X11-unix /var/lib/chroot2pfs/$(basename "${NAME%.$EXT}")/$(basename $SCRIPT)
+if [ "$SCRIPT" ] ; then
+    systemd-nspawn $BOOT -D $root_br   -M "$MACHINE_NAME" --setenv=DISPLAY="${DISPLAY:-}" --setenv=WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" --setenv=XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/${gui_uid:-0}}" --bind=/tmp/.X11-unix /var/lib/chroot2pfs/$(basename "${NAME%.$EXT}")/$(basename $SCRIPT)
+    command_status=$?
+elif [ -n "$command" ] ; then
+    systemd-nspawn $BOOT -D $root_br   -M "$MACHINE_NAME" --setenv=DISPLAY="${DISPLAY:-}" --setenv=WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" --setenv=XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/${gui_uid:-0}}" --bind=/tmp/.X11-unix:/tmp/.X11-unix $command
+    command_status=$?
+else
+    systemd-nspawn $BOOT -D $root_br   -M "$MACHINE_NAME" --setenv=DISPLAY="${DISPLAY:-}" --setenv=WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" --setenv=XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/${gui_uid:-0}}" --bind=/tmp/.X11-unix:/tmp/.X11-unix /bin/bash -c "export PS1='$PFS_NSPAWN_PS1'; exec /bin/bash --noprofile --norc -i"
+    command_status=$?
+fi
+elif [ $CHROOT == "chroot" ] ; then
+if [ "$SCRIPT" ] ; then
+    chroot $root_br env -i DISPLAY="${DISPLAY:-}" WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/${gui_uid:-0}}" /var/lib/chroot2pfs/$(basename "${NAME%.$EXT}")/$(basename $SCRIPT)
+    command_status=$?
+elif [ -n "$command" ] ; then
+    chroot $root_br env -i DISPLAY="${DISPLAY:-}" WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/${gui_uid:-0}}" $command
+    command_status=$?
+else
+    chroot $root_br env -i HOME=/root TERM="${TERM:-xterm}" DISPLAY="${DISPLAY:-}" WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/${gui_uid:-0}}" PATH="/usr/sbin:/usr/bin:/sbin:/bin" PS1="$PFS_CHROOT_PS1" /bin/bash --noprofile --norc -i
+    command_status=$?
+fi
+else 
+NOMOD=yes 
+echo "$(_ 'Wrong container type, must be "chroot" or "nspawn"')"
+command_status=2
+fi
+
+[ $remove_X_perm ] && xhost -local: 
+umount_all
+
+if [ "$LAYERING_MODE" = "overlay" ] ; then
+    mod_br=$SYSMNT/changes$nn/upper
+else
+    mod_br=$SYSMNT/changes$nn
+fi
+rm -rf $mod_br/tmp >/dev/null
+rm -rf $mod_br/{dev,proc,sys,tmp} >/dev/null
+rmdir "$mod_br"/{dev,proc,sys,lost+found} "$mod_br/var/cache" "$mod_br/var/lib" "$mod_br/var" "$mod_br/etc" 2>/dev/null
+
+if [ -n "$TRIM_CHROOT" ] && command -v trim-chroot >/dev/null 2>&1 ; then
+    trim-chroot "$mod_br" >/dev/null 2>&1
+fi
+
+if [ "$command_status" -ne 0 ] ; then
+    unmount_binds
+    delete_layer
+    exit "$command_status"
+fi
+
+if [ $NOMOD ] ; then
+    :
+elif echo "${NAME}" | grep -q "\.${EXT}\$" ; then
+    # Module-file output (NAME ends with .$EXT)
+    if [ "$LAYERING_MODE" = "overlay" ] ; then
+        mkpfs $mod_br -l $fast_alg  $WH   -o $NAME
+    else
+        mkpfs $mod_br $fast_alg  $WH   -o $NAME
+    fi
+    mkpfs_status=$?
+    [ "$mkpfs_status" -eq 0 ] && MODULE="$(readlink -e ${NAME})"
+else
+    # Directory output (default; NAME has no .$EXT suffix)
+    if [ "$LAYERING_MODE" = "overlay" ] ; then
+        rmdir "$NAME" 2>/dev/null
+        [ -d "$NAME" ] && exitmsg "$(printf "$(_ 'Output directory "%s" already exists')" "$NAME")" 6
+        mkdir -p "$(dirname "$NAME")"
+        cp -auPR "$mod_br" "$NAME"
+        mkpfs_status=$?
+    else
+        mkpfs $mod_br $fast_alg  $WH   -o $NAME
+        mkpfs_status=$?
+    fi
+    [ "$mkpfs_status" -eq 0 ] && MODULE="$(readlink -e ${NAME})"
+fi
+unmount_binds
+
+if [ "${mkpfs_status:-0}" -ne 0 ] ; then
+    delete_layer
+    exit "$mkpfs_status"
+fi
+
+delete_layer
+delaufs_status=$?
+[ "$delaufs_status" -eq 0 ] || exit "$delaufs_status"
+
+# по этой строке имя модуля получается при пересборке.
+echo $MODULE 

@@ -1,0 +1,102 @@
+#!/bin/sh
+#Unmount filesystem from AUFS
+#260307 sfs
+# Ensure pfs-utils binaries are resolvable via which(1) when invoked from a
+# restricted PATH (e.g. systemd, GUI, sudo without --preserve-env).
+PATH="/usr/bin:/usr/sbin:${PATH}"
+export PATH
+. $(which pfs)
+HLP () {
+  echo "Usage: $(basename "$0") FYLESYSTEM (squashfs module, dir, iso, img, etc) "
+  echo "-n  --no-update  - do not update icon caches, fonts, etc"
+  echo "-s  --saveram    - do not remoove module from RAM after unmounting"
+  echo "-v               - verbose output" 
+  echo "-h  --help       - this help"
+  exit 2
+}
+
+for arg in "$@"
+do
+  case "${arg}" in
+    "-n" | "--no-update") fupdate="no";;
+    "-s" | "--saveram") saveram="yes";;
+    "-v" ) verb="yes";;
+    "-h" | "--help") infile=""; break;;
+    "-"*[A-Za-z]*) echo "$(basename "$0"): invalid option -- '$(echo ${arg} | tr -d '-')'" >&2; exit 1;;
+    *) infile="${arg}";;
+  esac
+done
+
+[ "${infile}_" = "_" ] && HLP
+
+# v5: reject whitespace in module path (same policy as mkpfs)
+case "${infile}" in
+    *" "*|*"	"*)
+        printf '%s: пробелы в именах модулей не поддерживаются: %s\n' "$(basename "$0")" "${infile}" >&2
+        printf '%s: whitespace in module paths is not supported.\n' "$(basename "$0")" >&2
+        exit 2
+        ;;
+esac
+
+allow_only_root
+
+if [ -f "${infile}" ] ; then 
+	fsname="$(basename $(realpath "${infile}"))" 
+	checksfsxzb >/dev/null || exitmsg "Kernel not support PFS!" 3
+else
+	fsname="$(basename "${infile}")"
+fi
+
+#mountpoint="${prefixmp}${fsname}"
+mountpoint="$(awk '/'${fsname}'/ {print $2}' /proc/mounts)"
+if [ -d "${mountpoint}" ]; then
+  sync
+  # https://github.com/util-linux/util-linux/issues/2309
+  #mountb -t aufs -o remount,del:"${mountpoint}"/ aufs /  2>/dev/null
+  mountb -t aufs -o remount,del$a2"${mountpoint}"/ aufs /  2>/dev/null
+  stataufs=$?
+  sync
+ UP(){
+  if [ "${fupdate}" != "no" -a ${stataufs} -eq 0 ] ; then
+	  pfs_update_caches "${mountpoint}" 
+	for script in $(find $(dirname $0) -maxdepth 1 -name "runpfsunload*" -user root) ; do 
+	  $script "${mountpoint}"  & 
+	done
+  fi
+ }
+  losetupb |grep -q "${copyramdir}${fsname}"  && ramfree=yes 
+  UP && umountb -d "${mountpoint}" 2>/dev/null 
+  status=$?
+  sync
+  rmdir "${mountpoint}" >/dev/null
+  [ ${status} -eq 0 ] && status=${stataufs}
+  [ ${status} -gt 0 ] && echo "Unmount \"${fsname}\" failed!" >&2
+  sync
+else
+  echo "Object \"${fsname}\" not mounted." >&2
+  status=22
+fi
+if 	[ $ramfree ] ; then
+	[ $saveram ] || pfsramfree "${fsname}" 
+fi
+
+
+if [ "$status" -ne 0 -a "$status" -ne 22 ] ;then
+#  for a in $( lsof / |awk '{print $9}' |grep "\/..*" | egrep -v "/proc|/sys|/run|/tmp|/dev|/home|.so.|.so$" | sort -u) ; do
+  [ "$verb" ] && for a in $( lsof / |awk '{print $9}' |grep "\/..*" | egrep -v "/proc|/sys|/run|/tmp|/dev|/home" | sort -u) ; do
+    #[ -f "$a" ] || continue
+    [ -x "$a" ] || continue
+    [ -d "$a" ] && continue
+    [ -x  "$mountpoint/$a"	] && FILES="$FILES $a"
+  done
+fi
+
+if [ "$FILES" ] ; then 
+  echo '' ; echo "Files opened from $1:"
+    for f in $FILES ; do 
+    echo -n $f 
+  [ -f  "$changesDir/$f" ] && echo " - changed" || echo '' 
+  done
+fi
+
+exit ${status}

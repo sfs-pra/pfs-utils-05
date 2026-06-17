@@ -1,0 +1,136 @@
+.TH PFSLOAD 8 "2026-05-06" "pfs-utils-cli" "PuppyRus PFS Module Tools"
+.SH NAME
+pfsload \- attach a .pfs module to a running AUFS root
+.SH SYNOPSIS
+.B pfsload
+[\fIOPTIONS\fR]
+\fIFILESYSTEM\fR
+.SH DESCRIPTION
+.B pfsload
+mounts a
+.B .pfs
+squashfs module (or an erofs image, directory, or block device) and adds it
+as a layer to the running AUFS root filesystem.
+.PP
+AUFS-only: system-wide hot attach/detach is not supported on OverlayFS roots;
+use
+.BR pfsrun (8)
+for OverlayFS runtime execution.
+.PP
+The module is loop-mounted read-only at
+.IR /mnt/.<basename> ,
+then inserted into the AUFS layer stack.
+After a successful load,
+.B pfsload
+updates system caches (icon themes, fonts, shared libraries) and runs any
+.B runpfsload*
+hook scripts found alongside the utility.
+.PP
+Whitespace in the module path is rejected with exit code 2.
+.SH OPTIONS
+.TP
+.BR \-u ", " \-\-upper
+Mount the module as the topmost (upper) layer, so its files take precedence
+over all lower layers.
+This is the default.
+.TP
+.BR \-l ", " \-\-lower
+Mount the module as the lowest (append) layer, below all existing layers.
+.TP
+.BR \-r ", " \-\-toram
+Copy the module to a RAM disk (tmpfs) before loading.
+Useful for modules on slow media.
+Requires enough free RAM.
+.TP
+.BR \-n ", " \-\-no\-update
+Skip cache updates after loading.
+.TP
+.B \-\-ro ", " \-\-read\-only
+Mount the module read-only even when the source is a directory or block device.
+.TP
+.BR \-h ", " \-\-help
+Print usage and exit.
+.SH ARGUMENTS
+.TP
+.I FILESYSTEM
+Path to a
+.B .pfs
+squashfs file, an erofs image, a directory, or a block device.
+.SH EXAMPLES
+.PP
+Load a module into the upper AUFS layer:
+.RS
+.nf
+pfsload /srv/modules/firefox.pfs
+.fi
+.RE
+.PP
+Load a module into RAM first:
+.RS
+.nf
+pfsload \-r /mnt/usb/myapp.pfs
+.fi
+.RE
+.PP
+Load a directory as a lower layer:
+.RS
+.nf
+pfsload \-l /srv/extra\-files
+.fi
+.RE
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+Usage error (no file specified).
+.TP
+.B 2
+Whitespace in module path, or module not found.
+.TP
+.B 3
+Unknown filesystem type.
+.TP
+.B 4
+Kernel does not support PFS (squashfs/aufs missing).
+.TP
+.B 5
+Unsupported filesystem type for directory source.
+.TP
+.B 6
+Module already mounted.
+.TP
+.B 7
+No free loop device found.
+.SH ENVIRONMENT
+.TP
+.B PFS_LAYERING
+When set to
+.B aufs
+or
+.BR overlay ,
+overrides automatic layering detection. The overlay value does not make
+.B pfsload
+perform system-wide OverlayFS hot attach; use
+.BR pfsrun (8)
+instead.
+.SH FILES
+.TP
+.I /mnt/.<basename>
+Mount point created for the module.
+.TP
+.I /run/pfs-utils/layer-map/<basename>.layer
+State file recording the layering mode and layer path for later unload.
+.TP
+.I /run/pfs-utils/ram/
+RAM disk directory used by
+.BR \-\-toram .
+.SH SEE ALSO
+.BR pfsunload (8),
+.BR pfsrun (8),
+.BR pfsinfo (8),
+.BR pfsload\-v4 (8),
+.BR pfs\-utils (8)
+.SH AUTHORS
+PuppyRus pfs-utils maintainers.

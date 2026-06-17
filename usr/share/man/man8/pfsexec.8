@@ -1,0 +1,197 @@
+.TH PFSEXEC 8 "2026-04" "pfs-utils-cli" "PFS module tools"
+.SH NAME
+pfsexec \- run a command inside a private overlay namespace using a PFS module
+.SH SYNOPSIS
+.B pfsexec
+[\fIOPTIONS\fR] [\fIMODULE.pfs\fR] [\fICOMMAND\fR [\fIARGS\fR...]]
+.SH DESCRIPTION
+.B pfsexec
+launches
+.I COMMAND
+in a fresh mount namespace where the lower layers of an
+.BR overlayfs (5)
+mount come from one or more
+.B .pfs
+modules merged with the host root. The upper layer is by default a
+.BR tmpfs (5)
+under
+.IR /run/pfs-utils/exec/$$-<ns> ,
+so changes are discarded on exit. Modules are loop-mounted read-only with the
+appropriate filesystem type
+.RB ( squashfs ", " erofs ),
+chained as
+.IR lowerdir=mod1:mod2:...:/ ,
+and finally
+.BR pivot_root (8)'ed
+into so the command runs as if the merged tree was the host root.
+
+Compared to
+.BR pfsload (8) ,
+.B pfsexec
+does not modify the running system: when the command exits, the namespace
+and the overlay disappear. Compared to
+.BR pfsactivate (8) ,
+.B pfsexec
+gives full kernel-level transparency (no symlinks) at the cost of being
+process-scoped.
+.SH OPTIONS
+.TP
+.BR -h ", " --help
+Show inline help and exit.
+.TP
+.BR -m " " \fIMODULE\fR
+Add another module to the overlay stack. Repeatable. Can be combined with
+the positional
+.I MODULE.pfs
+argument.
+.TP
+.B --rw
+Use a private
+.B tmpfs
+upper/work pair under
+.I /run/pfs-utils/exec
+(default). Changes are discarded on exit.
+.TP
+.BR --persist " " \fIDIR\fR
+Use
+.IR DIR/upper " and " DIR/work
+as the persistent overlay upper/work pair. Lets writes survive between
+runs but is also dangerous if the overlay metadata becomes inconsistent.
+.TP
+.BR --bind " " \fIPATH\fR
+Bind-mount host
+.I PATH
+inside the namespace. Repeatable. Useful for
+.IR /proc , /sys , /dev , /run/user/$UID , /tmp/.X11-unix ,
+.IR /run/dbus
+and similar plumbing.
+.SH ARGUMENTS
+.TP
+.I MODULE.pfs
+Positional path to a PFS module. Equivalent to
+.BR -m " " \fIMODULE.pfs\fR .
+Either positional
+.I MODULE.pfs
+or at least one
+.B -m
+must be supplied.
+.TP
+.I COMMAND
+Program to execute inside the namespace after pivot_root. If omitted, the
+shell defined by
+.B $SHELL
+(or
+.B /bin/bash )
+is started. The command runs as the same UID/GID as
+.B pfsexec
+itself \(em
+.B pfsexec
+.B does not
+drop privileges; pair with
+.BR runuser (1)
+or use the higher-level
+.BR pfsrun (8)
+launcher.
+.SH FILESYSTEM SUPPORT
+.B pfsexec
+detects the module filesystem with
+.B fs_type
+from
+.BR pfs (8)
+which checks magic bytes for
+.B squashfs
+(offset 0) and
+.B erofs
+(offset 1024). Both endiannesses are recognised. Other formats are rejected.
+.SH KERNEL REQUIREMENTS
+The kernel must support
+.B overlayfs
+(\fIgrep overlay /proc/filesystems\fR) and
+.B unshare --propagation=private
+(util-linux 2.27+).
+.B pfsexec
+exits with a clear error if either is missing.
+.SH PRIVILEGES
+.B pfsexec
+must be run as root because it performs
+.B mount
+and
+.BR pivot_root .
+For a friendlier experience that handles privilege drop, GUI environment
+propagation, $HOME bind, etc., use
+.BR pfsrun (8)
+instead.
+.SH EXIT STATUS
+.TP
+.B 0
+the wrapped command exited successfully.
+.TP
+.B 2
+argument error (missing module, unknown option, whitespace in module path).
+.TP
+.B 3
+overlayfs not supported by the kernel.
+.TP
+.B 4
+module not found.
+.TP
+.B 5
+unsupported module filesystem.
+.TP
+.B 6
+overlay or session directory creation failed.
+.TP
+.B 7
+must run as root /
+.B unshare
+unavailable / pivot_root failed.
+.PP
+For other codes
+.B pfsexec
+returns whatever the wrapped command returned.
+.SH FILES
+.TP
+.I /run/pfs-utils/exec/$$-<ns>/
+ephemeral session directory; cleaned up on exit.
+.TP
+.I /run/pfs-utils/exec/$$-<ns>/module-N
+loop-mount of the N-th module.
+.TP
+.I /run/pfs-utils/exec/$$-<ns>/upper
+.TQ
+.I /run/pfs-utils/exec/$$-<ns>/work
+overlay upper/work for the
+.B --rw
+default mode.
+.SH EXAMPLES
+.PP
+Run a one-shot command:
+.RS
+.nf
+pfsexec firefox-bin-gtk3-p-130.0.0_64-sf01.pfs /opt/firefox/firefox --new-instance
+.fi
+.RE
+.PP
+Stack two modules and run a shell:
+.RS
+.nf
+pfsexec -m base.pfs -m extras.pfs /bin/bash
+.fi
+.RE
+.PP
+Bring in extra paths and persist writes:
+.RS
+.nf
+pfsexec --bind /home/$USER --persist /tmp/dev-overlay devtools.pfs make build
+.fi
+.RE
+.SH SEE ALSO
+.BR pfsrun (8),
+.BR pfsload (8),
+.BR pfsunload (8),
+.BR pfsactivate (8),
+.BR pfsdeactivate (8),
+.BR pfs-utils (8),
+.BR overlayfs (5),
+.BR unshare (1),
+.BR pivot_root (8)

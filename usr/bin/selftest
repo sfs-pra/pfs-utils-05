@@ -1,0 +1,748 @@
+#!/bin/sh
+# скрипт для самотестирования утилит pfs
+# пока основные только
+#260301 sfs
+# Ensure pfs-utils binaries are resolvable via which(1) when invoked from a
+# restricted PATH (e.g. systemd, GUI, sudo without --preserve-env).
+PATH="/usr/bin:/usr/sbin:${PATH}"
+export PATH
+if ! command -v pfs >/dev/null 2>&1; then
+    PATH="$(dirname "$0"):${PATH}"
+    export PATH
+fi
+. "$(which pfs)"
+
+ACTIVE_LAYERING="$(pfs --layering-mode 2>/dev/null || true)"
+[ -n "$ACTIVE_LAYERING" ] || ACTIVE_LAYERING="$(detect_layering_mode 2>/dev/null || true)"
+case "$ACTIVE_LAYERING" in
+    aufs|overlay) ;;
+    *) ACTIVE_LAYERING="aufs" ;;
+esac
+AUFS_ONLY_OVERLAY_SKIP="\033[33mSKIP\033[0m (AUFS-only on overlay)"
+
+# --- legacy flags ---
+MKPFS="\033[31mFALSE\033[0m"
+MKPFSm="\033[31mFALSE\033[0m"
+MKPFSd="\033[31mFALSE\033[0m"
+MKPFS_MERGE="\033[31mFALSE\033[0m"
+MKPFS_OVERLAY_MERGE="\033[31mFALSE\033[0m"
+MNTFILE="\033[31mFALSE\033[0m"
+PFSLOAD="\033[31mFALSE\033[0m"
+PFSUNLOAD="\033[31mFALSE\033[0m"
+PFSLOADr="\033[31mFALSE\033[0m"
+PFSUNLOADr="\033[31mFALSE\033[0m"
+PFSREBUILD="\033[31mFALSE\033[0m"
+PFSEXTRACT="\033[31mFALSE\033[0m"
+PFSEXTRACTd="\033[31mFALSE\033[0m"
+PFSEXTRACT_SIMPLE="\033[31mFALSE\033[0m"
+PFSUNINSTALL="\033[31mFALSE\033[0m"
+
+# --- v5 Phase 0 flags ---
+FS_TYPE_SQUASHFS="\033[31mFALSE\033[0m"
+FS_TYPE_EROFS="\033[31mFALSE\033[0m"
+FS_TYPE_UNKNOWN="\033[31mFALSE\033[0m"
+MKPFS_EROFS="\033[31mFALSE\033[0m"
+PFSLOAD_EROFS="\033[31mFALSE\033[0m"
+PFSUNLOAD_EROFS="\033[31mFALSE\033[0m"
+PFSUNLOAD_MULTIMOUNT="\033[31mFALSE\033[0m"
+DETECT_INITRD="\033[31mFALSE\033[0m"
+LAYERING_AUFS="\033[31mFALSE\033[0m"
+LAYERING_OVERLAY_OVERRIDE="\033[31mFALSE\033[0m"
+ADDLAYER_DISPATCH="\033[31mFALSE\033[0m"
+V4_SIBLINGS="\033[31mFALSE\033[0m"
+DEPRECATION_DEDUP="\033[31mFALSE\033[0m"
+DEPRECATION_STDERR="\033[31mFALSE\033[0m"
+PFSINFO_MACHINE="\033[31mFALSE\033[0m"
+CHECKRAMFREEB_POS="\033[31mFALSE\033[0m"
+CHECKRAMFREEB_RANGE="\033[31mFALSE\033[0m"
+FHS_INSTALL_REGISTRY="\033[31mFALSE\033[0m"
+
+# --- Wave A: regression tests ---
+A_INJECT_LOAD="\033[31mFALSE\033[0m"
+A_INJECT_UNLOAD="\033[31mFALSE\033[0m"
+A_UNLOAD_NOTMOUNTED="\033[31mFALSE\033[0m"
+A_LOAD_NOFILE="\033[31mFALSE\033[0m"
+A_LOAD_BADOPT="\033[31mFALSE\033[0m"
+A_EXITMSG_STDERR="\033[31mFALSE\033[0m"
+A_DOUBLE_LOAD="\033[31mFALSE\033[0m"
+A_LAYERMAP_CLEAN="\033[31mFALSE\033[0m"
+A_HELP_CONTENT="\033[31mFALSE\033[0m"
+A_MKEROFS_HELP="\033[31mFALSE\033[0m"
+
+# --- Wave B: parity / edge cases ---
+B_V4_SIBLING_MOUNT="\033[31mFALSE\033[0m"
+B_LOAD_SPACES="\033[31mFALSE\033[0m"
+B_LOAD_UNICODE="\033[31mFALSE\033[0m"
+B_EMPTY_SOURCE="\033[31mFALSE\033[0m"
+B_MKEROFS_NOSRC="\033[31mFALSE\033[0m"
+B_ROUNDTRIP_IDEMPOTENT="\033[31mFALSE\033[0m"
+
+# --- Wave C: perf ---
+C_PERF_GATE="\033[31mFALSE\033[0m"
+CHROOT2PFS_AUFS="\033[31mFALSE\033[0m"
+CHROOT2PFS_OVERLAY="\033[31mFALSE\033[0m"
+CHROOT2PFS_TRIM="\033[31mFALSE\033[0m"
+CHROOT2PFS_NOTRIM="\033[31mFALSE\033[0m"
+PFSRUN_BASIC="\033[31mFALSE\033[0m"
+PFSEXEC_BASIC="\033[31mFALSE\033[0m"
+
+CLEAR () {
+	rm -f ./first.${EXT} 2>/dev/null
+	rm -f ./second.${EXT} 2>/dev/null
+	rm -f ./testmodule.${EXT} 2>/dev/null
+	rm -fr ./testmodule_pfs 2>/dev/null
+	rm -fr ./selftest-chroot2pfs-aufs ./selftest-chroot2pfs-overlay 2>/dev/null
+	rm -fr ./selftest-chroot2pfs-trim ./selftest-chroot2pfs-notrim ./selftest-trim.sh 2>/dev/null
+	pfsunload ./testmodule.${EXT} 2>/dev/null
+	pfsuninstall ./testmodule.${EXT} 2>/dev/null
+	rmdir /111 2>/dev/null
+}
+
+ex(){ printf "%b\n" "$m\n====== \033[31mTest  aborted\033[0m ====="
+	CLEAR
+	exit 1
+}
+
+mkdir -p ./first/111 ./second/222 ./first/empty
+echo first  > ./first/111/file
+echo second > ./second/222/file
+chmod 644 ./first/empty ; chown nobody ./first/empty
+
+# ========================================================================
+# Legacy suite (unchanged behaviour)
+# ========================================================================
+
+echo "############# mkpfs ##############"
+m="\n=========================="
+mkpfs ./first -q && mkpfs ./second -q && MKPFS=OK
+m="$m\nmkpfs=			$MKPFS"
+rm -rf ./first
+rm -rf ./second
+[ "$MKPFS" != "OK" ] && ex
+
+echo "############# unsquashfs ##############"
+pfsextract ./first.${EXT} -q && rm -rf ./first &&
+PFSEXTRACT_SIMPLE=OK
+m="$m\npfsextract simple =	$PFSEXTRACT_SIMPLE"
+[ "$PFSEXTRACT_SIMPLE" != "OK" ] && ex
+
+echo "############# pfsinstall ##############"
+pfsextract -i -q ./first.${EXT} && PFSINSTALL=OK
+m="$m\npfsextract -i=		$PFSINSTALL"
+[ "$PFSINSTALL" != "OK" ] && ex
+
+echo "############# pfsunstall ##############"
+pfsuninstall ./first.${EXT} && PFSUNINSTALL=OK
+m="$m\npfsuninstall=		$PFSUNINSTALL"
+[ "$PFSUNINSTALL" != "OK" ] && ex
+
+echo "############# mkpfs merging ##############"
+mkpfs ./first.${EXT} ./second.${EXT} -o testmodule.${EXT} -q && MKPFS_MERGE=OK
+m="$m\nmkpfs merging=		$MKPFS_MERGE"
+[ "$MKPFS_MERGE" != "OK" ] && ex
+
+echo "############# pfsinfo ##############"
+[ "`pfsinfo testmodule.${EXT} |wc -l`" = "2" ] && PFSINFO=OK
+m="$m\npfsinfo=		$PFSINFO"
+
+echo "############# mountfile ##############"
+MNTFILE_MP="/tmp/.selftest-mntfile-$$"
+mountfile testmodule.${EXT} "${MNTFILE_MP}" && umount "${MNTFILE_MP}" &&
+rmdir "${MNTFILE_MP}" && MNTFILE=OK
+m="$m\n(u)mountfile=		$MNTFILE"
+
+echo "############# pfsload ##############"
+if [ "$ACTIVE_LAYERING" = "overlay" ]; then
+    PFSLOAD="$AUFS_ONLY_OVERLAY_SKIP"
+else
+    pfsload ./testmodule.${EXT} && PFSLOAD=OK
+fi
+m="$m\npfsload=		$PFSLOAD"
+
+echo "############# pfsunload ##############"
+if [ "$ACTIVE_LAYERING" = "overlay" ]; then
+    PFSUNLOAD="$AUFS_ONLY_OVERLAY_SKIP"
+else
+    pfsunload ./testmodule.${EXT} && PFSUNLOAD=OK
+fi
+m="$m\npfsunload=		$PFSUNLOAD"
+
+echo "############# pfsload to ram ##############"
+if [ "$ACTIVE_LAYERING" = "overlay" ]; then
+    PFSLOADr="$AUFS_ONLY_OVERLAY_SKIP"
+else
+    pfsload -r ./testmodule.${EXT} && PFSLOADr=OK
+fi
+m="$m\nload to ram=		$PFSLOADr"
+
+echo "############# pfsrebuild ##############"
+if [ "$ACTIVE_LAYERING" = "overlay" ]; then
+    PFSREBUILD="$AUFS_ONLY_OVERLAY_SKIP"
+else
+    [ "$PFSLOAD" = "OK" ] && rm -f ./testmodule.${EXT}
+    pfsrebuild testmodule.${EXT} && PFSREBUILD=OK
+fi
+m="$m\npfsrebuild=		$PFSREBUILD"
+rm -r first second 2>/dev/null
+
+echo "############# pfsunload from ram ##############"
+if [ "$ACTIVE_LAYERING" = "overlay" ]; then
+    PFSUNLOADr="$AUFS_ONLY_OVERLAY_SKIP"
+else
+    pfsunload ./testmodule.${EXT} && PFSUNLOADr=OK
+fi
+m="$m\nunload ram=		$PFSUNLOADr"
+
+echo "############# pfsextract ##############"
+pfsextract testmodule.${EXT} -o testmodule -f -q && [ -f testmodule/first.${EXT} ] && \
+[ -f testmodule/second.${EXT} ]  && PFSEXTRACT=OK
+m="$m\npfsextract=		$PFSEXTRACT"
+[ "$PFSEXTRACT" != "OK" ] && ex
+
+echo "############# mkpfs -m ##############"
+rm -r ./testmodule.${EXT} 2>/dev/null
+mkpfs -m testmodule  && MKPFSm=OK
+m="$m\nmkpfs -m=		$MKPFSm"
+rm -r testmodule 2>/dev/null
+[ "$MKPFSm" != "OK" ] && ex
+
+echo "############# pfsextract -d##############"
+pfsextract -d testmodule.${EXT} && [ -d testmodule/first ] && \
+    [ -d testmodule/second ]  && PFSEXTRACTd=OK
+m="$m\npfsextract -d=		$PFSEXTRACTd"
+[ "$PFSEXTRACTd" != "OK" ] && ex
+
+echo "############# mkpfs -d ##############"
+rm -r ./testmodule.${EXT} 2>/dev/null
+mkpfs -d testmodule  && MKPFSd=OK
+m="$m\nmkpfs -d=		$MKPFSd"
+rm -r testmodule #2>/dev/null
+
+# ========================================================================
+# v5 Phase 0 feature tests
+# ========================================================================
+
+echo "############# v5: fs_type classifies squashfs ##############"
+mkdir -p ./fst_sq_src && echo marker > ./fst_sq_src/f
+if mkpfs ./fst_sq_src -q 2>/dev/null && [ -f ./fst_sq_src.${EXT} ]; then
+    fs_t_sq="$(fs_type ./fst_sq_src.${EXT} 2>/dev/null || true)"
+    [ "${fs_t_sq}" = "squashfs" ] && FS_TYPE_SQUASHFS=OK
+fi
+rm -rf ./fst_sq_src ./fst_sq_src.${EXT}
+m="$m\nfs_type squashfs=	$FS_TYPE_SQUASHFS"
+
+echo "############# v5: fs_type 'unknown' on non-pfs file ##############"
+echo "not a filesystem" > ./not_a_pfs.bin
+fs_t_un="$(fs_type ./not_a_pfs.bin 2>/dev/null || true)"
+[ "${fs_t_un}" = "unknown" ] && FS_TYPE_UNKNOWN=OK
+rm -f ./not_a_pfs.bin
+m="$m\nfs_type unknown=	$FS_TYPE_UNKNOWN"
+
+echo "############# v5: mkpfs-erofs builds a valid erofs image ##############"
+if ! command -v mkfs.erofs >/dev/null 2>&1 ; then
+    MKPFS_EROFS="\033[33mSKIP\033[0m (mkfs.erofs not installed)"
+elif ! command -v mkpfs-erofs >/dev/null 2>&1 ; then
+    MKPFS_EROFS="\033[33mSKIP\033[0m (mkpfs-erofs wrapper missing)"
+else
+    mkdir -p ./erofs_src/usr/share
+    echo "v5 erofs selftest" > ./erofs_src/usr/share/marker
+    mkpfs-erofs -o ./erofs_test.${EXT} ./erofs_src >/dev/null 2>&1 && \
+        [ -s ./erofs_test.${EXT} ] && MKPFS_EROFS=OK
+    rm -rf ./erofs_src
+fi
+m="$m\nmkpfs-erofs=		$MKPFS_EROFS"
+
+echo "############# v5: fs_type classifies erofs ##############"
+if [ -f ./erofs_test.${EXT} ]; then
+    fs_t_er="$(fs_type ./erofs_test.${EXT} 2>/dev/null || true)"
+    [ "${fs_t_er}" = "erofs" ] && FS_TYPE_EROFS=OK
+fi
+m="$m\nfs_type erofs=		$FS_TYPE_EROFS"
+
+echo "############# v5: pfsload erofs ##############"
+if [ "$ACTIVE_LAYERING" = "overlay" ]; then
+    PFSLOAD_EROFS="$AUFS_ONLY_OVERLAY_SKIP"
+elif [ "$MKPFS_EROFS" = "OK" ] && [ -f ./erofs_test.${EXT} ]; then
+    pfsload ./erofs_test.${EXT} >/dev/null 2>&1 && \
+        grep -q " /mnt/.erofs_test.${EXT} " /proc/mounts && \
+        PFSLOAD_EROFS=OK
+fi
+m="$m\npfsload erofs=		$PFSLOAD_EROFS"
+
+echo "############# v5: pfsunload erofs (multi-mount regression) ##############"
+if [ "$ACTIVE_LAYERING" = "overlay" ]; then
+    PFSUNLOAD_EROFS="$AUFS_ONLY_OVERLAY_SKIP"
+    PFSUNLOAD_MULTIMOUNT="$AUFS_ONLY_OVERLAY_SKIP"
+elif [ "$PFSLOAD_EROFS" = "OK" ]; then
+    pfsunload ./erofs_test.${EXT} >/dev/null 2>&1
+    if ! grep -q " /mnt/.erofs_test.${EXT} " /proc/mounts && \
+       ! grep -q " /run/bundles/.erofs_test.${EXT} " /proc/mounts ; then
+        PFSUNLOAD_EROFS=OK
+        PFSUNLOAD_MULTIMOUNT=OK
+    fi
+fi
+m="$m\npfsunload erofs=	$PFSUNLOAD_EROFS"
+m="$m\npfsunload mm-fix=	$PFSUNLOAD_MULTIMOUNT"
+rm -f ./erofs_test.${EXT} 2>/dev/null
+
+echo "############# v5: _detect_initrd returns known value ##############"
+det="$(_detect_initrd 2>/dev/null || true)"
+case "${det}" in
+    rootaufs2|uird|livekit|porteus|unknown) DETECT_INITRD=OK ;;
+esac
+m="$m\n_detect_initrd=		$DETECT_INITRD (=${det:-empty})"
+
+echo "############# v5: addlayer_dispatch is a function ##############"
+if type addlayer_dispatch 2>/dev/null | grep -qi 'function'; then
+    ADDLAYER_DISPATCH=OK
+fi
+m="$m\naddlayer_dispatch=	$ADDLAYER_DISPATCH"
+
+echo "############# v5: detect_layering_mode respects PFS_LAYERING=aufs ##############"
+lm="$(PFS_LAYERING=aufs sh -c '. "$(which pfs)" >/dev/null 2>&1; detect_layering_mode 2>/dev/null')"
+[ "${lm}" = "aufs" ] && LAYERING_AUFS=OK
+m="$m\nPFS_LAYERING=aufs=	$LAYERING_AUFS"
+
+echo "############# v5: detect_layering_mode respects PFS_LAYERING=overlay ##############"
+lmo="$(PFS_LAYERING=overlay sh -c '. "$(which pfs)" >/dev/null 2>&1; detect_layering_mode 2>/dev/null')"
+[ "${lmo}" = "overlay" ] && LAYERING_OVERLAY_OVERRIDE=OK
+m="$m\nPFS_LAYERING=overlay=	$LAYERING_OVERLAY_OVERRIDE"
+
+echo "############# v5: mkpfs merges through OverlayFS when requested ##############"
+if grep -q '[[:space:]]overlay$' /proc/filesystems 2>/dev/null ; then
+    mkdir -p ./ovl_a ./ovl_b
+    echo a > ./ovl_a/a
+    echo b > ./ovl_b/b
+    if PFS_LAYERING=overlay mkpfs ./ovl_a ./ovl_b -o ./ovl_merge."${EXT}" -q 2>/dev/null && \
+        [ -f ./ovl_merge."${EXT}" ] && \
+        pfsextract ./ovl_merge."${EXT}" -o ./ovl_unpacked -q 2>/dev/null && \
+        [ -f ./ovl_unpacked/ovl_a."${EXT}" ] && \
+        [ -f ./ovl_unpacked/ovl_b."${EXT}" ] ; then
+        MKPFS_OVERLAY_MERGE=OK
+    fi
+    rm -rf ./ovl_a ./ovl_b ./ovl_merge."${EXT}" ./ovl_unpacked
+else
+    MKPFS_OVERLAY_MERGE="\033[33mSKIP\033[0m (overlayfs unavailable)"
+fi
+m="$m\nmkpfs overlay merge=	$MKPFS_OVERLAY_MERGE"
+
+echo "############# v5: v4 siblings installed and executable ##############"
+_v4_missing=""
+for _s in pfs-v4 pfsload-v4 pfsunload-v4 ; do
+    [ -x "/usr/bin/${_s}" ] || _v4_missing="${_v4_missing}${_v4_missing:+ }${_s}"
+done
+if [ -z "${_v4_missing}" ]; then
+    V4_SIBLINGS=OK
+else
+    V4_SIBLINGS="\033[31mFALSE\033[0m (missing: ${_v4_missing})"
+fi
+m="$m\nv4 siblings=		$V4_SIBLINGS"
+
+echo "############# v5: deprecation warning goes to stderr, once per run ##############"
+dedup_dir="$(mktemp -d 2>/dev/null || echo /tmp/ddr.$$)"
+mkdir -p "${dedup_dir}"
+dep_stderr=$(XDG_RUNTIME_DIR="${dedup_dir}" sh -c '
+    . "$(which pfs)" >/dev/null 2>&1
+    addlayer_aufs() { return 0; }
+    addlayer "aufs" 2>&1 1>/dev/null
+    addlayer "aufs" 2>&1 1>/dev/null
+    addlayer "aufs" 2>&1 1>/dev/null
+' 2>&1 1>/dev/null | grep -c DEPRECATED)
+dep_stdout=$(XDG_RUNTIME_DIR="${dedup_dir}.two" sh -c '
+    mkdir -p "${XDG_RUNTIME_DIR}"
+    . "$(which pfs)" >/dev/null 2>&1
+    addlayer_aufs() { return 0; }
+    addlayer "aufs" 2>/dev/null
+' | grep -c DEPRECATED)
+rm -rf "${dedup_dir}" "${dedup_dir}.two"
+[ "${dep_stderr}" -le 1 ] 2>/dev/null && DEPRECATION_DEDUP=OK
+[ "${dep_stdout}" -eq 0 ] 2>/dev/null && DEPRECATION_STDERR=OK
+m="$m\ndeprecation dedup=	$DEPRECATION_DEDUP (warns=${dep_stderr})"
+m="$m\ndeprecation stderr=	$DEPRECATION_STDERR (stdout-leak=${dep_stdout})"
+
+echo "############# v5: pfsinfo --machine emits TAB-delimited output ##############"
+mkdir -p ./pi_src && echo x > ./pi_src/f
+if mkpfs ./pi_src -q 2>/dev/null && [ -f ./pi_src.${EXT} ]; then
+    mi="$(pfsinfo --machine ./pi_src.${EXT} 2>/dev/null || true)"
+    tab="$(printf '\t')"
+    case "${mi}" in
+        *"${tab}"*) PFSINFO_MACHINE=OK ;;
+    esac
+fi
+rm -rf ./pi_src ./pi_src.${EXT} 2>/dev/null
+m="$m\npfsinfo --machine=	$PFSINFO_MACHINE"
+
+echo "############# v5: checkramfreeb returns a positive integer ##############"
+ram_kb="$(checkramfreeb 2>/dev/null || true)"
+case "${ram_kb}" in
+    ''|-*|*[!0-9]*) ;;
+    *) [ "${ram_kb}" -gt 0 ] 2>/dev/null && CHECKRAMFREEB_POS=OK ;;
+esac
+m="$m\ncheckramfreeb pos=	$CHECKRAMFREEB_POS (=${ram_kb:-empty} KB)"
+
+echo "############# v5: checkramfreeb within +/-25% of MemAvailable ##############"
+mem_av="$(awk '/^MemAvailable:/ {print $2; exit}' /proc/meminfo 2>/dev/null)"
+case "${mem_av}" in
+    ''|*[!0-9]*) ;;
+    *)
+        if [ "$CHECKRAMFREEB_POS" = "OK" ] && [ "${mem_av}" -gt 0 ]; then
+            lo=$(( mem_av * 75 / 100 ))
+            hi=$(( mem_av * 125 / 100 ))
+            if [ "${ram_kb}" -ge "${lo}" ] && [ "${ram_kb}" -le "${hi}" ]; then
+                CHECKRAMFREEB_RANGE=OK
+            fi
+        fi
+        ;;
+esac
+m="$m\ncheckramfreeb +/-25%=	$CHECKRAMFREEB_RANGE (avail=${mem_av:-?} KB)"
+
+echo "############# v5: pfsextract -i writes to /var/lib/pfs-utils/install ##############"
+mkdir -p ./fhs_src && echo x > ./fhs_src/marker
+if mkpfs ./fhs_src -q 2>/dev/null && [ -f ./fhs_src.${EXT} ]; then
+    pfsextract -i -q ./fhs_src.${EXT} 2>/dev/null
+    if [ -d /var/lib/pfs-utils/install/fhs_src ] && \
+       [ ! -d /etc/packages/install/fhs_src ]; then
+        FHS_INSTALL_REGISTRY=OK
+    fi
+    pfsuninstall ./fhs_src.${EXT} 2>/dev/null || true
+fi
+rm -rf ./fhs_src ./fhs_src.${EXT}
+m="$m\nFHS install registry=	$FHS_INSTALL_REGISTRY"
+
+# ========================================================================
+# Wave A: regression tests for bugs fixed 2026-04-23
+# ========================================================================
+
+echo "############# A: shell-injection rejected by pfsload ##############"
+rm -f /tmp/.selftest-canary-*
+pfsload '; touch /tmp/.selftest-canary-LOAD-'"$$"'.pwned' >/dev/null 2>&1 || true
+[ ! -f /tmp/.selftest-canary-LOAD-$$.pwned ] && A_INJECT_LOAD=OK
+rm -f /tmp/.selftest-canary-*
+m="$m\nA: inject pfsload=	$A_INJECT_LOAD"
+
+echo "############# A: shell-injection rejected by pfsunload ##############"
+pfsunload '; touch /tmp/.selftest-canary-UNLOAD-'"$$"'.pwned' >/dev/null 2>&1 || true
+[ ! -f /tmp/.selftest-canary-UNLOAD-$$.pwned ] && A_INJECT_UNLOAD=OK
+rm -f /tmp/.selftest-canary-*
+m="$m\nA: inject pfsunload=	$A_INJECT_UNLOAD"
+
+echo "############# A: pfsunload on not-mounted module exits 22 ##############"
+mkdir -p ./nm_src && echo x > ./nm_src/f
+if [ "$ACTIVE_LAYERING" = "overlay" ]; then
+    A_UNLOAD_NOTMOUNTED="$AUFS_ONLY_OVERLAY_SKIP"
+    rc="skip-overlay"
+elif mkpfs ./nm_src -q 2>/dev/null && [ -f ./nm_src.${EXT} ]; then
+    pfsunload ./nm_src.${EXT} >/dev/null 2>&1
+    rc=$?
+    [ "${rc}" = "22" ] && A_UNLOAD_NOTMOUNTED=OK
+else
+    rc="mkpfs-failed"
+fi
+rm -rf ./nm_src ./nm_src.${EXT}
+m="$m\nA: unload-not-mnt=	$A_UNLOAD_NOTMOUNTED (rc=${rc})"
+
+echo "############# A: pfsload on missing file exits with clear error ##############"
+if [ "$ACTIVE_LAYERING" = "overlay" ]; then
+    A_LOAD_NOFILE="$AUFS_ONLY_OVERLAY_SKIP"
+    rc="skip-overlay"
+else
+    pfsload ./definitely-missing.${EXT} >/dev/null 2>&1
+    rc=$?
+    [ "${rc}" = "2" ] && A_LOAD_NOFILE=OK
+fi
+m="$m\nA: load missing=	$A_LOAD_NOFILE (rc=${rc})"
+
+echo "############# A: pfsload --badopt exits non-zero ##############"
+pfsload --definitelyunknownopt >/dev/null 2>&1
+rc=$?
+[ "${rc}" != "0" ] && A_LOAD_BADOPT=OK
+m="$m\nA: load bad opt=	$A_LOAD_BADOPT (rc=${rc})"
+
+echo "############# A: exitmsg writes to stderr, not stdout ##############"
+stdout_leak="$(pfsload ./definitely-missing.${EXT} 2>/dev/null || true)"
+stderr_msg="$(pfsload ./definitely-missing.${EXT} 2>&1 >/dev/null || true)"
+if [ -z "${stdout_leak}" ] && [ -n "${stderr_msg}" ]; then
+    A_EXITMSG_STDERR=OK
+fi
+m="$m\nA: exitmsg stderr=	$A_EXITMSG_STDERR"
+
+echo "############# A: double-pfsload is rejected ##############"
+mkdir -p ./dl_src && echo x > ./dl_src/f
+if [ "$ACTIVE_LAYERING" = "overlay" ]; then
+    A_DOUBLE_LOAD="$AUFS_ONLY_OVERLAY_SKIP"
+elif mkpfs ./dl_src -q 2>/dev/null && [ -f ./dl_src.${EXT} ]; then
+    pfsload ./dl_src.${EXT} >/dev/null 2>&1
+    if grep -q " /mnt/.dl_src.${EXT} " /proc/mounts ; then
+        pfsload ./dl_src.${EXT} >/dev/null 2>&1
+        rc=$?
+        [ "${rc}" != "0" ] && A_DOUBLE_LOAD=OK
+        pfsunload ./dl_src.${EXT} >/dev/null 2>&1
+    fi
+fi
+rm -rf ./dl_src ./dl_src.${EXT}
+m="$m\nA: double-load=		$A_DOUBLE_LOAD"
+
+echo "############# A: /run/pfs-utils/layer-map has no stale entries ##############"
+if [ -d /run/pfs-utils/layer-map ]; then
+    stale=$(ls /run/pfs-utils/layer-map/ 2>/dev/null | grep -cE '(erofs_test|testmodule|dl_src|nm_src)\.layer$')
+    [ "${stale}" = "0" ] && A_LAYERMAP_CLEAN=OK
+else
+    A_LAYERMAP_CLEAN=OK
+fi
+m="$m\nA: layer-map clean=	$A_LAYERMAP_CLEAN"
+
+echo "############# A: pfsload --help prints Usage ##############"
+hlp="$(pfsload --help 2>&1 || true)"
+case "${hlp}" in
+    *Usage*|*Использование*) A_HELP_CONTENT=OK ;;
+esac
+m="$m\nA: pfsload --help=	$A_HELP_CONTENT"
+
+echo "############# A: mkpfs-erofs --help has Usage/Options/Examples ##############"
+if command -v mkpfs-erofs >/dev/null 2>&1 ; then
+    meh="$(mkpfs-erofs --help 2>&1 || true)"
+    case "${meh}" in
+        *Usage:*Options:*Examples:*) A_MKEROFS_HELP=OK ;;
+    esac
+fi
+m="$m\nA: mkpfs-erofs help=	$A_MKEROFS_HELP"
+
+echo "############# A: chroot2pfs --aufs creates a directory ##############"
+if [ "$ACTIVE_LAYERING" = "overlay" ]; then
+    CHROOT2PFS_AUFS="$AUFS_ONLY_OVERLAY_SKIP"
+elif command -v chroot2pfs >/dev/null 2>&1 ; then
+    rm -rf ./selftest-chroot2pfs-aufs
+    if chroot2pfs --aufs -n ./selftest-chroot2pfs-aufs --command /bin/true >/dev/null 2>&1 && \
+        [ -d ./selftest-chroot2pfs-aufs ]; then
+        CHROOT2PFS_AUFS=OK
+    fi
+    rm -rf ./selftest-chroot2pfs-aufs
+fi
+m="$m\nA: chroot2pfs aufs=	$CHROOT2PFS_AUFS"
+
+echo "############# A: chroot2pfs --overlay creates a directory ##############"
+if command -v chroot2pfs >/dev/null 2>&1 && grep -q '[[:space:]]overlay$' /proc/filesystems 2>/dev/null ; then
+    rm -rf ./selftest-chroot2pfs-overlay
+    if chroot2pfs --overlay -n ./selftest-chroot2pfs-overlay --command /bin/true >/dev/null 2>&1 && \
+        [ -d ./selftest-chroot2pfs-overlay ]; then
+        CHROOT2PFS_OVERLAY=OK
+    fi
+    rm -rf ./selftest-chroot2pfs-overlay
+else
+    CHROOT2PFS_OVERLAY="\033[33mSKIP\033[0m (overlayfs unavailable)"
+fi
+m="$m\nA: chroot2pfs overlay=	$CHROOT2PFS_OVERLAY"
+
+echo "############# A: chroot2pfs trims disposable files by default ##############"
+if command -v chroot2pfs >/dev/null 2>&1 && grep -q '[[:space:]]overlay$' /proc/filesystems 2>/dev/null ; then
+    rm -rf ./selftest-chroot2pfs-trim ./selftest-trim.sh
+    cat > ./selftest-trim.sh <<'EOF'
+#!/bin/sh
+mkdir -p /var/log
+printf '%s\n' trim-marker > /var/log/pfs-trim-test
+EOF
+    if chroot2pfs --overlay -n ./selftest-chroot2pfs-trim --script ./selftest-trim.sh >/dev/null 2>&1 && \
+        [ ! -e ./selftest-chroot2pfs-trim/var/log/pfs-trim-test ]; then
+        CHROOT2PFS_TRIM=OK
+    fi
+    rm -rf ./selftest-chroot2pfs-trim ./selftest-trim.sh
+else
+    CHROOT2PFS_TRIM="\033[33mSKIP\033[0m (overlayfs unavailable)"
+fi
+m="$m\nA: chroot2pfs trim=	$CHROOT2PFS_TRIM"
+
+echo "############# A: chroot2pfs --notrim keeps disposable files ##############"
+if command -v chroot2pfs >/dev/null 2>&1 && grep -q '[[:space:]]overlay$' /proc/filesystems 2>/dev/null ; then
+    rm -rf ./selftest-chroot2pfs-notrim ./selftest-trim.sh
+    cat > ./selftest-trim.sh <<'EOF'
+#!/bin/sh
+mkdir -p /var/log
+printf '%s\n' trim-marker > /var/log/pfs-trim-test
+EOF
+    if chroot2pfs --overlay --notrim -n ./selftest-chroot2pfs-notrim --script ./selftest-trim.sh >/dev/null 2>&1 && \
+        [ -e ./selftest-chroot2pfs-notrim/var/log/pfs-trim-test ]; then
+        CHROOT2PFS_NOTRIM=OK
+    fi
+    rm -rf ./selftest-chroot2pfs-notrim ./selftest-trim.sh
+else
+    CHROOT2PFS_NOTRIM="\033[33mSKIP\033[0m (overlayfs unavailable)"
+fi
+m="$m\nA: chroot2pfs notrim=	$CHROOT2PFS_NOTRIM"
+
+echo "############# A: pfsrun can execute /bin/true with a module ##############"
+mkdir -p ./pfsrun_src && echo x > ./pfsrun_src/f
+if command -v pfsrun >/dev/null 2>&1 && command -v pfsexec >/dev/null 2>&1 && \
+    grep -q '[[:space:]]overlay$' /proc/filesystems 2>/dev/null && \
+    mkpfs ./pfsrun_src -q 2>/dev/null && [ -f ./pfsrun_src.${EXT} ]; then
+    if pfsrun --no-gui --root --exec /bin/true ./pfsrun_src.${EXT} >/dev/null 2>&1 ; then
+        PFSRUN_BASIC=OK
+    fi
+elif ! grep -q '[[:space:]]overlay$' /proc/filesystems 2>/dev/null ; then
+    PFSRUN_BASIC="\033[33mSKIP\033[0m (overlayfs unavailable)"
+fi
+rm -rf ./pfsrun_src ./pfsrun_src.${EXT}
+m="$m\nA: pfsrun basic=	$PFSRUN_BASIC"
+
+echo "############# A: pfsexec can execute /bin/true with a module ##############"
+mkdir -p ./pfsexec_src && echo x > ./pfsexec_src/f
+if command -v pfsexec >/dev/null 2>&1 && \
+    grep -q '[[:space:]]overlay$' /proc/filesystems 2>/dev/null && \
+    mkpfs ./pfsexec_src -q 2>/dev/null && [ -f ./pfsexec_src.${EXT} ]; then
+    if pfsexec ./pfsexec_src.${EXT} -- /bin/true >/dev/null 2>&1 ; then
+        PFSEXEC_BASIC=OK
+    fi
+elif ! grep -q '[[:space:]]overlay$' /proc/filesystems 2>/dev/null ; then
+    PFSEXEC_BASIC="\033[33mSKIP\033[0m (overlayfs unavailable)"
+fi
+rm -rf ./pfsexec_src ./pfsexec_src.${EXT}
+m="$m\nA: pfsexec basic=	$PFSEXEC_BASIC"
+
+# ========================================================================
+# Wave B: behavioural parity / edge cases
+# ========================================================================
+
+echo "############# B: pfsload-v4 sibling produces mount ##############"
+if [ "$ACTIVE_LAYERING" = "overlay" ]; then
+    B_V4_SIBLING_MOUNT="$AUFS_ONLY_OVERLAY_SKIP"
+elif [ ! -x /usr/bin/pfsload-v4 ] || [ ! -x /usr/bin/pfsunload-v4 ]; then
+    B_V4_SIBLING_MOUNT="\033[33mSKIP\033[0m (v4 siblings not installed)"
+else
+    mkdir -p ./b_v4 && echo x > ./b_v4/f
+    if mkpfs ./b_v4 -q 2>/dev/null && [ -f ./b_v4.${EXT} ]; then
+        /usr/bin/pfsload-v4 ./b_v4.${EXT} >/dev/null 2>&1
+        if grep -q " /mnt/.b_v4.${EXT} " /proc/mounts ; then
+            B_V4_SIBLING_MOUNT=OK
+            /usr/bin/pfsunload-v4 ./b_v4.${EXT} >/dev/null 2>&1 || \
+                pfsunload ./b_v4.${EXT} >/dev/null 2>&1
+        fi
+    fi
+    rm -rf ./b_v4 ./b_v4.${EXT}
+fi
+m="$m\nB: v4 sibling mount=	$B_V4_SIBLING_MOUNT"
+
+echo "############# B: mkpfs rejects filename with spaces (by design) ##############"
+mkdir -p "./b space" && echo x > "./b space/f"
+mkpfs "./b space" -q >/dev/null 2>&1
+mk_rc=$?
+if [ "$mk_rc" = "2" ] && [ ! -f "./b space.${EXT}" ]; then
+    B_LOAD_SPACES=OK
+fi
+rm -rf "./b space" "./b space.${EXT}"
+m="$m\nB: spaces rejected=	$B_LOAD_SPACES (rc=$mk_rc)"
+
+echo "############# B: pfsload handles unicode filename ##############"
+mkdir -p "./тест_юник" && echo x > "./тест_юник/f"
+if [ "$ACTIVE_LAYERING" = "overlay" ]; then
+    B_LOAD_UNICODE="$AUFS_ONLY_OVERLAY_SKIP"
+elif mkpfs "./тест_юник" -q 2>/dev/null && [ -f "./тест_юник.${EXT}" ]; then
+    pfsload "./тест_юник.${EXT}" >/dev/null 2>&1
+    if grep -q "/mnt/.тест_юник.${EXT}" /proc/mounts ; then
+        B_LOAD_UNICODE=OK
+        pfsunload "./тест_юник.${EXT}" >/dev/null 2>&1
+    fi
+fi
+rm -rf "./тест_юник" "./тест_юник.${EXT}"
+m="$m\nB: unicode in name=	$B_LOAD_UNICODE"
+
+echo "############# B: mkpfs on empty source produces sane result ##############"
+mkdir -p ./empty_src
+out="$(mkpfs ./empty_src -q 2>&1 || true)"
+if [ -f ./empty_src.${EXT} ] || [ -n "${out}" ]; then
+    B_EMPTY_SOURCE=OK
+fi
+rm -rf ./empty_src ./empty_src.${EXT}
+m="$m\nB: mkpfs empty src=	$B_EMPTY_SOURCE"
+
+echo "############# B: mkpfs-erofs on missing source fails cleanly ##############"
+if command -v mkpfs-erofs >/dev/null 2>&1 ; then
+    mkpfs-erofs ./definitely-missing-dir >/tmp/.mkerofs.$$ 2>&1
+    rc=$?
+    out="$(cat /tmp/.mkerofs.$$ 2>/dev/null)"
+    rm -f /tmp/.mkerofs.$$
+    if [ "${rc}" != "0" ] && [ -n "${out}" ]; then
+        B_MKEROFS_NOSRC=OK
+    fi
+fi
+m="$m\nB: mkpfs-erofs miss=	$B_MKEROFS_NOSRC"
+
+echo "############# B: pfsload/pfsunload roundtrip is idempotent ##############"
+mkdir -p ./b_round && echo x > ./b_round/f
+if [ "$ACTIVE_LAYERING" = "overlay" ]; then
+    B_ROUNDTRIP_IDEMPOTENT="$AUFS_ONLY_OVERLAY_SKIP"
+elif mkpfs ./b_round -q 2>/dev/null && [ -f ./b_round.${EXT} ]; then
+    before=$(grep -cE "b_round\\.${EXT}" /proc/mounts)
+    pfsload ./b_round.${EXT} >/dev/null 2>&1
+    pfsunload ./b_round.${EXT} >/dev/null 2>&1
+    pfsload ./b_round.${EXT} >/dev/null 2>&1
+    pfsunload ./b_round.${EXT} >/dev/null 2>&1
+    after=$(grep -cE "b_round\\.${EXT}" /proc/mounts)
+    [ "${before}" = "${after}" ] && B_ROUNDTRIP_IDEMPOTENT=OK
+fi
+rm -rf ./b_round ./b_round.${EXT}
+m="$m\nB: round-trip idemp=	$B_ROUNDTRIP_IDEMPOTENT"
+
+# ========================================================================
+# Wave C: AUFS perf gate.
+# Overlay runtime coverage is exercised above in Wave A (pfsrun/pfsexec),
+# while this section keeps the AUFS-only benchmark gate mode-aware.
+# ========================================================================
+
+echo "############# C: AUFS perf gate (v5 <= 2x v4 sibling, 3 runs median) ##############"
+# Busybox-safe perf probe: uses `date +%s%N` for ns timestamps, no hyperfine,
+# no python. Each side runs 3 pfsload+pfsunload roundtrips; we take the
+# middle (median) of the three, then compare the ratio in awk.
+mkdir -p ./perf_src && echo x > ./perf_src/f
+if [ "$ACTIVE_LAYERING" = "overlay" ]; then
+    C_PERF_GATE="$AUFS_ONLY_OVERLAY_SKIP"
+elif [ ! -x /usr/bin/pfsload-v4 ] || [ ! -x /usr/bin/pfsunload-v4 ]; then
+    C_PERF_GATE="\033[33mSKIP\033[0m (v4 siblings not installed)"
+elif mkpfs ./perf_src -q 2>/dev/null && [ -f ./perf_src.${EXT} ]; then
+    # tiny warmup so caches are primed symmetrically
+    pfsload ./perf_src.${EXT} >/dev/null 2>&1 && pfsunload ./perf_src.${EXT} >/dev/null 2>&1
+
+    measure_ns() {
+        # $1 = load command path; $2 = unload command path
+        t0=$(date +%s%N) || return 1
+        "$1" ./perf_src.${EXT} >/dev/null 2>&1 || return 1
+        "$2" ./perf_src.${EXT} >/dev/null 2>&1 || return 1
+        t1=$(date +%s%N) || return 1
+        printf '%s\n' "$(( t1 - t0 ))"
+    }
+
+    is_positive_int() {
+        case "$1" in
+            ''|*[!0-9]*) return 1 ;;
+        esac
+        [ "$1" -gt 0 ]
+    }
+
+    measurements_ok=1
+    if ! v5a=$(measure_ns /usr/bin/pfsload    /usr/bin/pfsunload); then measurements_ok=0; fi
+    if ! v5b=$(measure_ns /usr/bin/pfsload    /usr/bin/pfsunload); then measurements_ok=0; fi
+    if ! v5c=$(measure_ns /usr/bin/pfsload    /usr/bin/pfsunload); then measurements_ok=0; fi
+    if ! v4a=$(measure_ns /usr/bin/pfsload-v4 /usr/bin/pfsunload-v4); then measurements_ok=0; fi
+    if ! v4b=$(measure_ns /usr/bin/pfsload-v4 /usr/bin/pfsunload-v4); then measurements_ok=0; fi
+    if ! v4c=$(measure_ns /usr/bin/pfsload-v4 /usr/bin/pfsunload-v4); then measurements_ok=0; fi
+
+    if ! is_positive_int "$v5a" || ! is_positive_int "$v5b" || ! is_positive_int "$v5c" || \
+       ! is_positive_int "$v4a" || ! is_positive_int "$v4b" || ! is_positive_int "$v4c"; then
+        measurements_ok=0
+    fi
+
+    if [ "$measurements_ok" = "1" ]; then
+        v5_med=$(printf '%s\n%s\n%s\n' "$v5a" "$v5b" "$v5c" | sort -n | sed -n 2p)
+        v4_med=$(printf '%s\n%s\n%s\n' "$v4a" "$v4b" "$v4c" | sort -n | sed -n 2p)
+
+        if [ -n "${v5_med}" ] && [ -n "${v4_med}" ] && [ "${v4_med}" -gt 0 ]; then
+            verdict=$(awk -v a="${v5_med}" -v b="${v4_med}" 'BEGIN { print (a <= b*2) ? "OK" : "FAIL" }')
+            [ "${verdict}" = "OK" ] && C_PERF_GATE=OK
+            v5_ms=$(( v5_med / 1000000 ))
+            v4_ms=$(( v4_med / 1000000 ))
+        fi
+    fi
+fi
+rm -rf ./perf_src ./perf_src.${EXT}
+m="$m\nC: perf gate <=2x=	$C_PERF_GATE (v5=${v5_ms:-?}ms v4=${v4_ms:-?}ms)"
+
+CLEAR
+	printf "%b\n" "$m\n====== \033[32mTest finished\033[0m ====="

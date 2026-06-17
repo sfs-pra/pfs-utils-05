@@ -1,0 +1,72 @@
+.TH PFSDEACTIVATE 8 "2026-04" "pfs-utils-cli" "PFS module tools"
+.SH NAME
+pfsdeactivate \- reverse a pfsactivate symlink injection and unmount the module
+.SH SYNOPSIS
+.B pfsdeactivate
+.RB [ --persist
+.IR DIR ]
+.IR MODULE.pfs
+.br
+.B pfsdeactivate
+.B --help
+.SH DESCRIPTION
+.B pfsdeactivate
+undoes a previous
+.BR pfsactivate (8)
+session for the given
+.IR MODULE.pfs :
+.IP \[bu] 2
+walks
+.I /run/pfs-utils/symlink-activations/<module>/state
+in
+.B reverse
+order,
+.IP \[bu]
+removes only those symlinks that still point inside the activator's mount
+directory (other symlinks are left untouched, defensive against external
+edits),
+.IP \[bu]
+restores any
+.IB <parent_dir>/.pfs.org. <basename>
+backup back to its original path,
+.IP \[bu]
+unmounts the loop module under
+.IR mount/
+and removes the per-module state directory.
+.PP
+.B pfsdeactivate
+is idempotent against partial state: leftover backups are restored even if
+the corresponding symlink is already gone, and the cleanup proceeds best-effort.
+.SH OPTIONS
+.TP
+.BR --persist " " \fIDIR\fR
+Use
+.IR DIR
+as the persistence root (must match the
+.B pfsactivate
+invocation that created the state).
+.TP
+.BR -h ", " --help
+Show inline help.
+.SH PRIVILEGES
+Must run as root.
+.SH EXIT STATUS
+.TP
+.B 0
+deactivation succeeded.
+.TP
+.B 1
+help mode, too many arguments, missing
+.B --persist
+value, or module is not currently activated.
+.TP
+.B 5
+deactivation finished with cleanup warnings (e.g. could not unmount the
+module). Re-run after closing programs that hold open files in the
+mount directory.
+.SH SEE ALSO
+.BR pfsactivate (8),
+.BR pfsexec (8),
+.BR pfsload (8),
+.BR pfsrun (8),
+.BR pfs-utils (8)

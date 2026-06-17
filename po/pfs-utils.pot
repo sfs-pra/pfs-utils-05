@@ -1,0 +1,513 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: pfs-utils 2026.04\n"
+"POT-Creation-Date: 2026-05-08 00:00+0000\n"
+"PO-Revision-Date: 2026-05-08 00:00+0000\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgid "--command \t- command to execute inside chroot; this parameter must be last on the command line"
+msgstr ""
+
+msgid "Run a program with a different locale: --command LANG=ru_RU.UTF-8 program. Works only with \"-c chroot\"."
+msgstr ""
+
+msgid "--script \t- script copied into chroot and executed there"
+msgstr ""
+
+msgid "-m | --mask \t- mask for system bundles used to build the aufs root for chroot"
+msgstr ""
+
+msgid "--mlist \t- list of modules and directories used to build aufs; separator is \",\""
+msgstr ""
+
+msgid "You can use \"#\" to disable an entry. Example: --mlist 1.${EXT},#2.${EXT},3.${EXT}"
+msgstr ""
+
+msgid "--flist \t- list of modules and directories read from a file; \"#\" disables an entry"
+msgstr ""
+
+msgid "Create a list of modules from dir: find /pth/dir -name *.$EXT | sort | awk '{print \"#\"$0}' > flist.lst"
+msgstr ""
+
+msgid "-f | --fast \t- build module with faster compression"
+msgstr ""
+
+msgid "-n | -o | --name \t- name of the output module or directory (directory when no .$EXT suffix is used)"
+msgstr ""
+
+msgid "-c | --contaner \t- container type: \"chroot\" or \"nspawn\" (systemd-nspawn required on both host and guest)"
+msgstr ""
+
+msgid "--boot - only for -c nspawn. See systemd-nspawn -b"
+msgstr ""
+
+msgid "--notrim \t- keep obviously unnecessary files in the result (cache etc.)"
+msgstr ""
+
+msgid "--wh \t- keep AUFS whiteout files"
+msgstr ""
+
+msgid "--bind \t- list of directories to mount into chroot in the format /SOURCE/DIR1::/TARGET/DIR1,/SOURCE/DIR2::/TARGET/DIR2"
+msgstr ""
+
+msgid "--overlay \t- use OverlayFS for the chroot root layer (default)"
+msgstr ""
+
+msgid "--aufs \t- force AUFS for the chroot root layer"
+msgstr ""
+
+msgid "--nomod \t- do not create a module from the resulting changes"
+msgstr ""
+
+msgid "Output: NAME without the .pfs suffix creates a directory (default)."
+msgstr ""
+
+msgid "        NAME with the .pfs suffix builds a single .pfs module."
+msgstr ""
+
+msgid "-X \t- allow access to the current GUI session (X11 and Wayland sockets). Useful for GUI applications inside chroot. Recommended with \"-c nspawn\"."
+msgstr ""
+
+msgid "The host kernel architecture must match the guest architecture (i686 or x86_64). The host distribution itself may differ."
+msgstr ""
+
+msgid "EXAMPLES"
+msgstr ""
+
+msgid "Build the mc module into the ModuleDIR directory:"
+msgstr ""
+
+msgid "Run pcmanfm from a guest system built from modules 1 and 3 (1 is in the upper AUFS layer and overrides 2):"
+msgstr ""
+
+msgid "Module %s was made by another program"
+msgstr ""
+
+msgid "rebuilding %s in %s"
+msgstr ""
+
+msgid "Using container: %s (layering: %s)"
+msgstr ""
+
+msgid "Please enter name for output directory (add .pfs suffix to build a module file): "
+msgstr ""
+
+msgid "Output file \"%s\" already exists"
+msgstr ""
+
+msgid "Output directory \"%s\" already exists"
+msgstr ""
+
+msgid "error mounting root"
+msgstr ""
+
+msgid "layer container number: %s"
+msgstr ""
+
+msgid "Wrong container type, must be \"chroot\" or \"nspawn\""
+msgstr ""
+
+msgid "Usage: pfsrun [OPTIONS] MODULE.pfs [COMMAND [ARGS...]]"
+msgstr ""
+
+msgid "       pfsrun [OPTIONS] -m MOD1.pfs [-m MOD2.pfs ...] [-- COMMAND [ARGS...]]"
+msgstr ""
+
+msgid "Run an application from a PFS module in an overlay namespace with desktop-session defaults."
+msgstr ""
+
+msgid "  --no-gui            Skip GUI binds and Wayland/X11 env propagation."
+msgstr ""
+
+msgid "Auto-discovery: when COMMAND is omitted, pfsrun derives the main binary from the first module name."
+msgstr ""
+
+msgid "If auto-detect fails, pfsrun opens an interactive shell with a marked PS1 prompt."
+msgstr ""
+
+msgid "must run as root (sudo not available)"
+msgstr ""
+
+msgid "unknown option: %s"
+msgstr ""
+
+msgid "module is required (see --help)"
+msgstr ""
+
+msgid "could not auto-detect main binary in module; dropping into interactive shell."
+msgstr ""
+
+msgid "try `ls /usr/bin /opt` and run the binary by hand. Exit shell to teardown the namespace."
+msgstr ""
+
+msgid "Usage: pfsexec [OPTIONS] [MODULE.pfs] [COMMAND [ARGS...]]"
+msgstr ""
+
+msgid "module is required"
+msgstr ""
+
+msgid "overlayfs is not supported by this kernel"
+msgstr ""
+
+msgid "Options:"
+msgstr ""
+
+msgid "\t-o / --out-file - output file name (if specified without the .$EXT suffix, the result will be a directory)."
+msgstr ""
+
+msgid "\t-w - do not include AUFS whiteouts."
+msgstr ""
+
+msgid "\t-l / --local - build in place without using aufs."
+msgstr ""
+
+msgid "\t-f / --fast - faster compression (larger .$EXT, but quicker to build)."
+msgstr ""
+
+msgid "\t--mksqfs / parameters for mksquashfs, compression, block size, etc. (must be the last parameter)."
+msgstr ""
+
+msgid "Aliases:"
+msgstr ""
+
+msgid " -d | -D - directories only"
+msgstr ""
+
+msgid " -m | -M - modules only"
+msgstr ""
+
+msgid "mkpfs: whitespace in names is not supported: %s"
+msgstr ""
+
+msgid "extractor for ${EXT} modules"
+msgstr ""
+
+msgid "Usage:"
+msgstr ""
+
+msgid "if the module is composite, extract submodules into ./file"
+msgstr ""
+
+msgid "if the module is simple, unpack it"
+msgstr ""
+
+msgid "extract only pack1 and pack2 from file.${EXT}"
+msgstr ""
+
+msgid "unpack into the system, i.e. install"
+msgstr ""
+
+msgid "create dir and unpack into it"
+msgstr ""
+
+msgid "extract into directories instead of modules"
+msgstr ""
+
+msgid "do not show progress output"
+msgstr ""
+
+msgid "faster compression (larger .${EXT}, but quicker to build)."
+msgstr ""
+
+msgid "parameters for mksquashfs; must be the last parameter."
+msgstr ""
+
+msgid " -u,   --upper     mount filesystem to upper layer (AUFS)."
+msgstr ""
+
+msgid " -l,   --lower     mount filesystem to lower layer (AUFS)."
+msgstr ""
+
+msgid " -n,   --no-update do not update caches"
+msgstr ""
+
+msgid " --ro, --read-only mount read-only"
+msgstr ""
+
+msgid " -r,   --toram     copy module to RAM disk (tmpfs) before loading"
+msgstr ""
+
+msgid "%s: whitespace in module names is not supported: %s"
+msgstr ""
+
+msgid "%s: whitespace in module paths is not supported."
+msgstr ""
+
+msgid "Not enough free RAM space"
+msgstr ""
+
+msgid "File already in RAM and mounted"
+msgstr ""
+
+msgid "Object \"%s\" not found!"
+msgstr ""
+
+msgid "Unknown file system -- \"%s\""
+msgstr ""
+
+msgid "Kernel does not support PFS!"
+msgstr ""
+
+msgid "\"%s\" -- unsupported filesystem"
+msgstr ""
+
+msgid "Object \"%s\" is mounted!"
+msgstr ""
+
+msgid "Error! Free loop devices were not found!"
+msgstr ""
+
+msgid "Layering error!"
+msgstr ""
+
+msgid "Unable to mount \"%s\" in \"%s\"."
+msgstr ""
+
+msgid "Mount error!"
+msgstr ""
+
+msgid "(squashfs module, dir, iso, img, etc.)"
+msgstr ""
+
+msgid "-n  --no-update  - do not update icon caches, fonts, etc."
+msgstr ""
+
+msgid "-s  --saveram    - do not remove module from RAM after unmounting"
+msgstr ""
+
+msgid "-v               - verbose output"
+msgstr ""
+
+msgid "-h  --help       - this help"
+msgstr ""
+
+msgid "Unmount \"%s\" failed!"
+msgstr ""
+
+msgid "Object \"%s\" not mounted."
+msgstr ""
+
+msgid "Files opened from %s:"
+msgstr ""
+
+msgid " - changed"
+msgstr ""
+
+msgid "EXPERIMENTAL — symlinks are not transparent (O_NOFOLLOW, st_dev)."
+msgstr ""
+
+msgid "Persistence in changes= mode is DANGEROUS. Deactivate before reboot."
+msgstr ""
+
+msgid "Works on any rootfs (aufs/overlay/ext4); on aufs-root use pfsload instead for kernel-level transparency."
+msgstr ""
+
+msgid "%s: invalid option -- %s"
+msgstr ""
+
+msgid "%s: too many arguments"
+msgstr ""
+
+msgid "%s: --persist requires DIR"
+msgstr ""
+
+msgid "%s: --list does not accept MODULE"
+msgstr ""
+
+msgid "pfsactivate: module not found: %s"
+msgstr ""
+
+msgid "pfsactivate: unsupported module filesystem: %s"
+msgstr ""
+
+msgid "pfsactivate: %s already activated"
+msgstr ""
+
+msgid "pfsactivate: unable to create state dir: %s"
+msgstr ""
+
+msgid "pfsactivate: unable to create state file: %s"
+msgstr ""
+
+msgid "pfsactivate: unable to mount module: %s"
+msgstr ""
+
+msgid "pfsactivate: unable to enumerate module files: %s"
+msgstr ""
+
+msgid "pfsactivate: refusing to overlay protected path: %s"
+msgstr ""
+
+msgid "pfsactivate: unable to create parent directory: %s"
+msgstr ""
+
+msgid "pfsactivate: refusing to replace directory target: %s"
+msgstr ""
+
+msgid "pfsactivate: backup already exists: %s"
+msgstr ""
+
+msgid "pfsactivate: unable to preserve original: %s"
+msgstr ""
+
+msgid "pfsactivate: unable to link target: %s"
+msgstr ""
+
+msgid "pfsactivate: unable to update state: %s"
+msgstr ""
+
+msgid "pfsactivate: activated %s files from %s"
+msgstr ""
+
+msgid "pfsdeactivate: not activated: %s"
+msgstr ""
+
+msgid "pfsdeactivate: unable to restore files for %s"
+msgstr ""
+
+msgid "%s: warning: failed to unmount %s"
+msgstr ""
+
+msgid "pfsdeactivate: deactivated %s with cleanup warnings"
+msgstr ""
+
+msgid "pfsdeactivate: deactivated %s"
+msgstr ""
+
+msgid "keep development files (useful mainly for compilation)"
+msgstr ""
+
+msgid "locales"
+msgstr ""
+
+msgid "docs, gtk-doc, info, licenses, man pages, etc."
+msgstr ""
+
+msgid "size optimization complete"
+msgstr ""
+
+msgid "Original size:"
+msgstr ""
+
+msgid "Optimized size:"
+msgstr ""
+
+msgid "Choose a working directory that is not written into /memory/changes"
+msgstr ""
+
+msgid "For a clean run this can be /tmp or any mounted storage device"
+msgstr ""
+
+msgid "Creating checkpoint, please wait."
+msgstr ""
+
+msgid "Lists are ready. Copying files..."
+msgstr ""
+
+msgid "Processing the \"new\" directory."
+msgstr ""
+
+msgid "Processing the \"changed\" directory."
+msgstr ""
+
+msgid "utility for analyzing system changes over a time interval."
+msgstr ""
+
+msgid "Mode 1. Interactive."
+msgstr ""
+
+msgid "Run the script in a terminal as root"
+msgstr ""
+
+msgid "Wait until the checkpoint creation message appears"
+msgstr ""
+
+msgid "Without closing the terminal, make the required changes to the system"
+msgstr ""
+
+msgid "Return to the terminal and continue by pressing ENTER"
+msgstr ""
+
+msgid "Wait for the completion message."
+msgstr ""
+
+msgid "Mode 2. For use in scripts"
+msgstr ""
+
+msgid "make changes"
+msgstr ""
+
+msgid "The utility creates a directory named"
+msgstr ""
+
+msgid "in the current directory. It contains subdirectories with new and changed files, plus file lists."
+msgstr ""
+
+msgid "ctlpoint directory - copy of changes before modifications, regular files only"
+msgstr ""
+
+msgid "new directory      - only new regular files"
+msgstr ""
+
+msgid "changed directory  - only changed regular files"
+msgstr ""
+
+msgid "ctlpoint.list      - list of regular files in changes before modifications"
+msgstr ""
+
+msgid "ctlpoint.noreg     - list of non-regular files in changes before modifications"
+msgstr ""
+
+msgid "new.list           - list of new regular files"
+msgstr ""
+
+msgid "new.noreg          - list of new non-regular files"
+msgstr ""
+
+msgid "changed.list       - list of changed files"
+msgstr ""
+
+msgid "filtered.list      - list of files filtered out from new"
+msgstr ""
+
+msgid "Warning: the utility will not work inside a change directory that itself writes into /changes"
+msgstr ""
+
+msgid "parameters:"
+msgstr ""
+
+msgid "do not compare checksums; rely only on modification time."
+msgstr ""
+
+msgid "disable the built-in filter"
+msgstr ""
+
+msgid "create a checkpoint and exit (--nomd5 and --nofilter do not work with --start)"
+msgstr ""
+
+msgid "calculate changes from the checkpoint created by"
+msgstr ""
+
+msgid "Checkpoint creation is complete."
+msgstr ""
+
+msgid "Do not close this terminal or interrupt"
+msgstr ""
+
+msgid "before making the required system changes."
+msgstr ""
+
+msgid "After you finish, type any character in this terminal and press ENTER"
+msgstr ""
+
+msgid "To abort, type \"exit\""
+msgstr ""
+
+msgid "The script has finished."
+msgstr ""
+
+msgid "The categorized changes and file lists are available in ./$dir"
+msgstr ""

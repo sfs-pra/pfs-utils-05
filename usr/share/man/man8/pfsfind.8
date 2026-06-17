@@ -1,0 +1,89 @@
+.TH PFSFIND 8 "2026-05-06" "pfs-utils-cli" "PuppyRus PFS Module Tools"
+.SH NAME
+pfsfind \- find a file across all AUFS layers and the changes directory
+.SH SYNOPSIS
+.B pfsfind
+\fIFILENAME\fR
+.br
+.B pfsfind
+\fIFILENAME\fR
+.B \-\-raw
+[\fIFORMAT\fR]
+.SH DESCRIPTION
+.B pfsfind
+searches for
+.I FILENAME
+across all currently mounted AUFS layers and the top-level changes directory
+(tmpfs).
+.PP
+In human-readable mode (default) it prints a table showing the layer number,
+module name, sub-module name, and path for each match.
+.PP
+In raw mode
+.RB ( \-\-raw )
+it prints one line per match using a user-defined format string.
+.SH OPTIONS
+.TP
+.B \-\-raw " " [\fIFORMAT\fR]
+Print raw output, one line per match.
+.I FORMAT
+is a shell-style string that may reference the following variables:
+.RS
+.TP
+.B $n
+Layer number.
+.TP
+.B $bundle
+Bundle mount point.
+.TP
+.B $module
+Module name (directory/basename).
+.TP
+.B $submodule
+Sub-module name (from pfs.files), or
+.B is_not_pfs
+if the module has no pfs metadata.
+.TP
+.B $path
+Path to the file within the layer.
+.RE
+.PP
+Default format when
+.B \-\-raw
+is given without a
+.I FORMAT
+argument:
+.RS
+.nf
+$n $bundle $module $submodule $path
+.fi
+.RE
+.SH EXAMPLES
+.PP
+Find a file in human-readable format:
+.RS
+.nf
+pfsfind libssl.so.3
+.fi
+.RE
+.PP
+Find a file and print only the layer number and module:
+.RS
+.nf
+pfsfind libssl.so.3 \-\-raw '$n $module'
+.fi
+.RE
+.SH EXIT STATUS
+.TP
+.B 0
+Success (no matches is still exit 0; an empty output means not found).
+.TP
+.B 1
+No filename given, or invalid option.
+.SH SEE ALSO
+.BR aufs\-n (8),
+.BR pfsfindlibs (8),
+.BR pfsinfo (8),
+.BR pfs\-utils (8)
+.SH AUTHORS
+PuppyRus pfs-utils maintainers.

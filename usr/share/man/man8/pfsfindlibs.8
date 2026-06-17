@@ -1,0 +1,78 @@
+.TH PFSFINDLIBS 8 "2026-05-06" "pfs-utils-cli" "PuppyRus PFS Module Tools"
+.SH NAME
+pfsfindlibs \- find which pfs packages provide the dynamic libraries needed by a directory tree
+.SH SYNOPSIS
+.B pfsfindlibs
+[\fB\-s\fR]
+[\fIDIR\fR]
+.SH DESCRIPTION
+.B pfsfindlibs
+scans
+.I DIR
+(default:
+.BR . )
+for ELF binaries, collects their dynamic library dependencies via
+.BR ldd (1),
+then searches the pfs-utils package registry to find which installed or mounted
+packages provide each library.
+.PP
+Packages that provide required libraries are printed to stdout.
+Libraries that are not found in any package are reported as warnings on stderr.
+.PP
+This is useful when building a new module: run
+.B pfsfindlibs
+on the module's root directory to discover which other modules it depends on.
+.SH OPTIONS
+.TP
+.BR \-s ", " \-\-short
+Strip version suffixes and architecture tags from package names
+.RI ( \-i686 ,
+.RI \-1.2.3 ,
+etc.) for a cleaner output.
+.TP
+.BR \-h ", " \-\-help
+Print usage and exit (via invalid option handling).
+.SH EXAMPLES
+.PP
+Find library dependencies for the current directory:
+.RS
+.nf
+pfsfindlibs
+.fi
+.RE
+.PP
+Find dependencies for a module root:
+.RS
+.nf
+pfsfindlibs /mnt/.myapp.pfs
+.fi
+.RE
+.PP
+Find dependencies with short package names:
+.RS
+.nf
+pfsfindlibs \-s ./myapp\-root
+.fi
+.RE
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+Directory not found.
+.SH FILES
+.TP
+.I /var/lib/pfs-utils/mount/
+Mounted package registry searched for library providers.
+.TP
+.I /var/lib/pfs-utils/install/
+Installed package registry searched for library providers.
+.SH SEE ALSO
+.BR pfsdepends (8),
+.BR pfsfind (8),
+.BR pfsinfo (8),
+.BR pfs\-utils (8),
+.BR ldd (1)
+.SH AUTHORS
+PuppyRus pfs-utils maintainers.

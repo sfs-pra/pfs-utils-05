@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-pfs-module">
+    <comment>PFS module (squashfs/erofs overlay)</comment>
+    <comment xml:lang="ru">PFS-модуль (squashfs/erofs overlay)</comment>
+    <icon name="application-x-executable"/>
+    <glob pattern="*.pfs"/>
+    <magic priority="60">
+      <!-- squashfs little-endian -->
+      <match type="string" value="hsqs" offset="0"/>
+      <!-- squashfs big-endian -->
+      <match type="string" value="sqsh" offset="0"/>
+      <!-- erofs little/big endian, magic at offset 1024 -->
+      <match type="string" value="\xe2\xe1\xf5\xe0" offset="1024"/>
+      <match type="string" value="\xe0\xf5\xe1\xe2" offset="1024"/>
+    </magic>
+    <sub-class-of type="application/x-sharedlib"/>
+  </mime-type>
+</mime-info>

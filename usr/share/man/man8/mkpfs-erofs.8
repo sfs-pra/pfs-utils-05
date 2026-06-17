@@ -1,0 +1,97 @@
+.TH MKPFS\-EROFS 8 "2026-05-06" "pfs-utils-cli" "PuppyRus PFS Module Tools"
+.SH NAME
+mkpfs\-erofs \- create a .pfs module image using the erofs filesystem
+.SH SYNOPSIS
+.B mkpfs\-erofs
+[\fB\-o\fR \fIOUT.pfs\fR]
+[\fImkfs.erofs\-options\fR...]
+\fISOURCE_DIR\fR
+.SH DESCRIPTION
+.B mkpfs\-erofs
+is a thin wrapper around
+.BR mkfs.erofs (1)
+that creates a
+.B .pfs
+module image using the erofs filesystem format instead of squashfs.
+.PP
+erofs modules load faster than squashfs on most hardware because erofs uses
+page-aligned blocks and supports random access without decompressing entire
+blocks.
+The trade-off is a slightly larger on-disk size for highly compressible content.
+.PP
+If no compression option
+.RB ( \-z )
+is supplied,
+.B mkpfs\-erofs
+prepends
+.B \-zlz4hc
+by default.
+All other arguments are passed through to
+.BR mkfs.erofs (1)
+unchanged.
+.SH OPTIONS
+.TP
+.BR \-o ", " \-\-out\-file " " \fIPATH\fR
+Output image path.
+Defaults to
+.RI ./ <source>.pfs
+when omitted.
+.TP
+.BR \-h ", " \-\-help
+Print usage and exit.
+.PP
+All other options are passed directly to
+.BR mkfs.erofs (1).
+.SH EXAMPLES
+.PP
+Build a module with default lz4hc compression:
+.RS
+.nf
+mkpfs\-erofs ./myapp\-root
+.fi
+.RE
+.PP
+Build with explicit output path:
+.RS
+.nf
+mkpfs\-erofs \-o myapp.pfs ./myapp\-root
+.fi
+.RE
+.PP
+Build with lzma compression:
+.RS
+.nf
+mkpfs\-erofs \-zlzma ./myapp\-root
+.fi
+.RE
+.PP
+Build with multiple threads:
+.RS
+.nf
+mkpfs\-erofs \-\-threads=4 ./myapp\-root
+.fi
+.RE
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+Missing
+.I SOURCE_DIR
+or invalid option.
+.TP
+.B 127
+.B mkfs.erofs
+not found in PATH.
+.PP
+Other codes propagate from
+.BR mkfs.erofs (1).
+.SH SEE ALSO
+.BR mkpfs (8),
+.BR pfsbench (8),
+.BR pfsload (8),
+.BR pfs\-utils (8),
+.BR mkfs.erofs (1)
+.SH AUTHORS
+PuppyRus pfs-utils maintainers.

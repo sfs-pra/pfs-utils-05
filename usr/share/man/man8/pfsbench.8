@@ -1,0 +1,130 @@
+.TH PFSBENCH 8 "2026-05-06" "pfs-utils-cli" "PuppyRus PFS Module Tools"
+.SH NAME
+pfsbench \- benchmark .pfs module formats and compression algorithms
+.SH SYNOPSIS
+.B pfsbench
+[\fIOPTIONS\fR]
+[\fB\-\-source\fR \fIDIR\fR | \fIMODULE.pfs\fR]
+.SH DESCRIPTION
+.B pfsbench
+measures build time, on-disk size, load/unload roundtrip latency, and
+(optionally) cold decompression throughput for every supported squashfs and
+erofs compression variant.
+It then prints a table and recommends the best profile for the given payload.
+.PP
+When no source is specified,
+.B pfsbench
+synthesizes a representative payload of the requested size.
+When a
+.B .pfs
+module is passed,
+.B pfsbench
+extracts it with
+.BR pfsextract (8)
+and benchmarks repacking in all formats.
+.PP
+.B pfsbench
+must run as root because it calls
+.BR pfsload (8)
+and
+.BR pfsunload (8)
+for roundtrip measurements.
+.SH OPTIONS
+.TP
+.B \-\-size " " \fBsmall\fR|\fBmedium\fR|\fBlarge\fR
+Synthesize a payload of approximately 1 MB, 10 MB (default), or 100 MB.
+.TP
+.B \-\-source " " \fIDIR\fR
+Use
+.I DIR
+as the payload instead of a synthesized one.
+Overrides
+.BR \-\-size .
+.TP
+.B \-\-runs " " \fIN\fR
+Number of roundtrip samples per variant.
+The median is reported.
+Default is 3; minimum is 1.
+.TP
+.B \-\-csv " " \fIFILE\fR
+Append raw measurements as CSV to
+.IR FILE .
+CSV schema:
+.IR variant , size_kb , build_ms , roundtrip_ms , cold_read_ms , runs , source_kb .
+.TP
+.BR \-\-full ", " \-\-all
+Run all compression variants, including those that typically lose to the
+curated set.
+Useful for audits.
+.TP
+.BR \-\-decompress ", " \-\-read
+Also measure cold decompression throughput: drop page caches, then read every
+file in the mounted module.
+This approximates the real startup latency for image-type modules.
+.TP
+.B \-\-list\-compressors
+Print available squashfs and erofs compressors and exit.
+.TP
+.B \-\-machine
+Emit TSV-only stdout (7-column header + data rows).
+No human table, no winners block.
+.TP
+.B \-\-debug
+Show stderr from failing
+.BR pfsload / pfsunload
+calls.
+.TP
+.BR \-h ", " \-\-help
+Print usage and exit.
+.SH EXAMPLES
+.PP
+Quick benchmark with a synthesized medium payload:
+.RS
+.nf
+pfsbench
+.fi
+.RE
+.PP
+Benchmark repacking an existing module:
+.RS
+.nf
+pfsbench /srv/modules/firefox.pfs \-\-decompress \-\-runs 5
+.fi
+.RE
+.PP
+Benchmark a real directory and save raw data:
+.RS
+.nf
+pfsbench \-\-source /opt/myapp \-\-csv /tmp/bench.csv
+.fi
+.RE
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+Missing dependency (mkpfs, mksquashfs, pfsload, or pfsunload not found), or
+must run as root.
+.SH ENVIRONMENT
+.TP
+.B PFSBENCH_TMP
+Override the scratch directory.
+Defaults to
+.I /var/tmp
+or
+.IR /tmp .
+.SH FILES
+.TP
+.I /var/tmp/pfsbench.XXXXXX/
+Temporary working directory; removed on exit.
+.SH SEE ALSO
+.BR pfsinfo (8),
+.BR pfsload (8),
+.BR pfsunload (8),
+.BR pfsextract (8),
+.BR mkpfs (8),
+.BR mkpfs\-erofs (8),
+.BR pfs\-utils (8)
+.SH AUTHORS
+PuppyRus pfs-utils maintainers.

@@ -1,0 +1,74 @@
+#!/bin/sh
+# pfsmigrate-install - move legacy /etc/packages/install entries to the
+# FHS location /var/lib/pfs-utils/install. Idempotent: safe to rerun.
+# v5 Phase 0 (A-variant FHS migration, 2026-04-23).
+
+PATH="/usr/bin:/usr/sbin:${PATH}"
+export PATH
+. "$(which pfs)" >/dev/null 2>&1 || true
+
+die() { printf 'pfsmigrate-install: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+    cat <<EOF
+pfsmigrate-install - migrate /etc/packages/install to /var/lib/pfs-utils/install
+
+Usage:
+    pfsmigrate-install [--dry-run] [--force]
+
+Options:
+    --dry-run   show what would be moved, don't touch the disk
+    --force     overwrite existing entries in the new location
+    -h, --help  show this help
+EOF
+    exit 0
+}
+
+DRY=""
+FORCE=""
+for a in "$@"; do
+    case "$a" in
+        -h|--help) usage ;;
+        --dry-run) DRY=1 ;;
+        --force)   FORCE=1 ;;
+        *) die "unknown option: $a" ;;
+    esac
+done
+
+[ "$(id -u)" -eq 0 ] || die "must run as root"
+
+SRC="${PFSDIR_INSTALL_LEGACY:-/etc/packages/install}"
+DST="${PFSDIR_INSTALL_NEW:-/var/lib/pfs-utils/install}"
+
+[ -d "$SRC" ] || { printf 'pfsmigrate-install: %s does not exist, nothing to do.\n' "$SRC"; exit 0; }
+
+mkdir -p "$DST" || die "cannot create $DST"
+
+moved=0; skipped=0; conflicts=0
+for entry in "$SRC"/*/ ; do
+    [ -d "$entry" ] || continue
+    name=$(basename "$entry")
+    target="$DST/$name"
+    if [ -e "$target" ] && [ -z "$FORCE" ]; then
+        printf 'skip %s (exists at %s — use --force to overwrite)\n' "$name" "$target"
+        conflicts=$((conflicts+1))
+        continue
+    fi
+    if [ -n "$DRY" ]; then
+        printf 'would move %s -> %s\n' "$entry" "$target"
+    else
+        [ -n "$FORCE" ] && rm -rf "$target"
+        mv -- "$entry" "$target" || die "failed to move $entry"
+        printf 'moved %s\n' "$name"
+    fi
+    moved=$((moved+1))
+done
+
+if [ -z "$DRY" ] && [ "$moved" -gt 0 ]; then
+    # remove empty legacy dir if it became empty
+    rmdir "$SRC" 2>/dev/null || true
+fi
+
+printf '\nSummary: moved=%s conflicts_skipped=%s\n' "$moved" "$conflicts"
+[ -n "$DRY" ] && printf '(dry-run; no filesystem changes made)\n'
+exit 0

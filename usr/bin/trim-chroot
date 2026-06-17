@@ -1,0 +1,211 @@
+#!/bin/sh
+#181122 sfs 
+
+: "${TEXTDOMAIN:=pfs-utils}"
+: "${TEXTDOMAINDIR:=/usr/share/locale}"
+export TEXTDOMAIN TEXTDOMAINDIR
+_() {
+    if command -v gettext >/dev/null 2>&1; then
+        gettext -- "$1"
+    else
+        printf '%s' "$1"
+    fi
+}
+
+HLP(){
+echo "Usage $0 [-g][-d][-l][-m] dir
+$m
+-g - GUI
+-d - $(_ 'keep development files (useful mainly for compilation)')
+-l - $(_ 'locales')
+-m - $(_ 'docs, gtk-doc, info, licenses, man pages, etc.')" && exit
+}
+
+[ "$1" ] && r="$1" || HLP
+X() {
+[ "$1" ] && rm -R ${1} 2>/dev/null
+}
+
+ERR(){ echo "======Eroor !!!======" && exit 1 ; }
+
+M(){
+[ "$1" ] && xx=$1 && shift || ERR
+[ "$1" ] && rx=$1 && shift || ERR
+[ "$2" ] || return
+if [ "$rx" != "xxx" ] ;then
+    #echo "$rd $rl $rm r=$r" #;exit
+    mkdir -p "$r$rx$xx" && mv "$@" "$r$rx$xx"
+else X "$@"
+fi
+}
+
+#X $r/var/lib/chroot2pfs
+X $r/var/log
+X $r/run
+
+X $r/etc/udev/hwdb.bin
+X $r/etc/ld.so.cache
+X $r/var/cache/ldconfig/aux-cache
+X $r/var/cache/fontconfig 
+X $r/var/cache/ldconfig 
+X $r/var/lib/pacman/sync 
+X $r/var/cache/pacman/pkg 
+X "$r/usr/local/share/applications/mimeinfo.cache" 
+X "$r/usr/share/applications/mimeinfo.cache" 
+exit
+#X "`find $r/usr/share/terminfo/* -maxdepth 0 -type d -name "*" -print |egrep -v 'l$|r$|v$|x$'`" 
+#X "`find $r/usr/share/kbd/locale/* -maxdepth 0 -type d -name "*" -print |egrep -v ''$l'$'`" 
+#X "`find $r/usr/share/kbd/consolefonts   -type f -name "*" -print |egrep -v  'Cyr_a8x|LatArCyrHeb|cyr-sun|sun12x'`" 
+#X "`find $r/usr/share/i18n/charmaps  -type f -name "*" -print |egrep -v '/CP1250|/CP1251|/CP1252|ISO-8859-1.gz|KOI-8|KOI8-|UTF-8.gz'`" 
+#X "`find $r/usr/share/X11/locale/* -maxdepth 0 -type d -name "*" -print |egrep -v '\/locale\/C$|en_US.UTF-8|ru_RU.UTF-8'`" 
+#rm -R `find  $r/usr/share/X11/locale/* -maxdepth 0  -type d -name "*" -print |egrep -v '\/locale\/C|koi8-r|ru_|en_|cp1251|iso8859-1$'`
+#X "`find $r/usr/lib/gconv/ -type f -name "*" -print |egrep -v 'CP1251.so|CP1252.so|IBM866.so|ISO8859-1.so|ISO8859-5.so|KOI|UNICODE.so|UTF-|gconv-modules$'`" 
+#x=/usr/share/gnupg ; MM "`ls -1 $r$x/help.*.txt |grep -v $l`" $x
+x=/usr/share/gnupg ; M $x $rm `ls -1 $r$x/help.*.txt |grep -v ".$l."`
+
+#X "$r/usr/share/zoneinfo"
+#X "$r/usr/share/mime"
+#X "$r/usr/share/xxkb"
+#X "$r/usr/share/fonts"
+#X "$r/usr/share/sounds/alsa"
+#X "`ls -1 $r/usr/lib/libgfortran.so*`"
+
+#dconf
+#X "$r/pra/mk/-/dconf-editor"
+#X "$r/usr/share/icons/HighContrast"
+#X "$r/usr/share/icons/Adwaita"
+
+#[ -d $r/usr/share/i18n/localescd ] && $r/usr/share/i18n/locales && rm `ls |egrep -v 'POSIX|en_US|i18n|ru_RU'` 
+
+#mkdir -p "$rd"
+#mkdir -p $rd/usr/lib/pkgconfig
+
+
+x=/usr/bin ; M $x $rd `find $r$x -type f -name "*" -print  2>/dev/null |grep -E '\-config$'`
+x=/usr/lib/gawk ; M $x $rd `find $r$x -type f -name "*" -print 2>/dev/null` |grep -E '.la$'
+
+mvdir(){ 
+if [ -d "$r$1" ] ;then
+    d2="$r$rd`dirname $1`" ; [ -d "$d2" ] || mkdir -p "$d2"
+    mv "$r$1" "$d2"
+fi
+}
+
+MV(){
+mvdir /usr/lib/glib-2.0/include 
+mvdir /usr/lib/glib-2.0/libffi-3.0.13
+mvdir /usr/lib/gtk-2.0/include
+mvdir /usr/include
+mvdir /usr/lib/pkgconfig
+mvdir /usr/lib/gdbus-2.0
+mvdir /usr/lib/girepository-1.0
+mvdir /usr/lib/dbus-1.0/include
+#mvdir /usr/lib/perl5
+#mvdir /usr/bin/core_perl
+mvdir /usr/lib/gcc
+#mvdir /usr/share/perl5
+mvdir /usr/share/pkgconfig
+mvdir /usr/share/aclocal
+mvdir /usr/share/automake-1.15
+mvdir /usr/share/autoconf
+mvdir /usr/lib/cmake
+mvdir /usr/share/cmake
+mvdir /usr/share/vala
+mvdir /usr/share/common-lisp
+#mvdir /usr/share/pygobject
+#mvdir /usr/share/pygtk
+#mvdir /usr/share/glib-2.0/codegen
+mvdir /usr/share/readline
+mvdir /usr/share/texinfo
+mvdir /usr/share/texinfo
+mvdir /var/lib/pacman/local
+mvdir /usr/share/gir-1.0
+
+if [ "`ls -1 $r/usr/lib/ 2>/dev/null |grep -E '\.o|a|la$'`" ] ;then
+mkdir -p $r$rd/usr/lib
+mv $r/usr/lib/*.o $r$rd/usr/lib/ 2>/dev/null
+mv $r/usr/lib/*.a $r$rd/usr/lib/ 2>/dev/null
+mv $r/usr/lib/*.la $r$rd/usr/lib/ 2>/dev/null
+fi
+
+#mv $r/usr/lib/libpython2* . $rd/usr/lib/
+}
+PY(){
+if [ "`find $r/usr/lib/python*`" ] ;then
+    [ -d $r$rd/usr/lib/ ] || mkdir -p $r$rd/usr/lib/
+    mv $r/usr/lib/python* $r$rd/usr/lib/
+fi
+}
+#[ "`uname -m`" = "i686" ] && MV
+
+#X "`ls -d $r/usr/share/locale/* |egrep -v '/'$l'$|/locale.a'`" 
+#X $r/usr/share/gtk-2.0/demo 
+#x="`ls -d $r/usr/share/locale/* |egrep -v ''$l'$'`" ; [ "$x" ] && rm -R "$x"
+#x="`find $r/usr/share/locale/* -maxdepth 0 -type d -name "*" -printf " %p" |egrep -v '/'$l'$'`" ; [ "$x" ] && rm -R $x
+#\( -name "firefox*.s*fs" -o  -name "chrome*.s*fs" -o  -name "opera*.s*fs" \)
+#find $r/usr/share/locale/* -maxdepth 0 -type d -name "*" 
+
+
+#rm $r/usr/share/fonts/misc/*
+#X "$r/usr/bin/gtk-demo" 
+X "$r/etc/udev/hwdb.bin" 
+
+if [ -f $r/etc/pacman.conf ];then
+#rm $r/usr/lib/locale/locale-archive 
+    printf "" > /var/log/pacman.log
+    rm $r/.arch-chroot 2>/dev/null
+#x="`ls -1d $r/usr/share/zoneinfo/* |egrep -v 'Asia|Etc|Europe|zone.tab'`" ; [ "$x" ] && rm -R $x
+fi
+
+###optim Pro
+#KBD(){
+x=/usr/share/kbd/keymaps ; M $x $rl `find $r$x/* -maxdepth 0 -type d -name "*" -print |grep -E -v '/i386|/include' 2>/dev/null`
+x=/usr/share/kbd/keymaps/i386 ; M $x $rl `find $r$x/* -maxdepth 0 -type d -name "*" -print |grep -E -v '/qwerty|/include' 2>/dev/null`
+x=/usr/share/kbd/locale ; M $x $rl `find $r$x/* -maxdepth 0 -type d -name "*" -print |grep -E -v '/'$l'' 2>/dev/null`
+#}
+x=/usr/share/ROX-Filer/Messages ; M $x $rl `find $r$x/* -maxdepth 0 -type d -name "*" -print 2>/dev/null |grep -E -v '/'$l''`
+
+#rm -R $r/usr/share/zoneinfo $r/usr/share/terminfo
+#x=`find $r/usr/bin -type f -name "*-config" -print` #|egrep -v  'Cyr_a8x|LatArCyrHeb|cyr-sun|sun12x'`
+
+[ "$rd" != "xxx" ] && X "`find $r$rd/var/lib/pacman/local  -type f \( -name "mtree" \) 2>/dev/null`"
+X "`find $r/var/lib/pacman/local  -type f \( -name "mtree" \) 2>/dev/null`"
+
+ICO(){
+#X "`find $r/usr/share/pixmaps/*.svg  -print`" 
+X "`find $r/usr/share/icons/hicolor/256x256/* -maxdepth 0 -type d -name "*" -print 2>/dev/null`" 
+#X "`find $r/usr/share/icons/hicolor/128x128/* -maxdepth 0 -type d -name "*" -print`" 
+X "`find $r/usr/share/icons/hicolor/96x96/* -maxdepth 0 -type d -name "*" -print 2>/dev/null`" 
+#X "`find $r/usr/share/icons/hicolor/scalable/* -maxdepth 0 -type d -name "*" -print`" 
+#X "$r/usr/share/icons/hicolor/index.theme"
+X "$r/usr/share/themes/bubble" 
+}
+X "/usr/share/icons/hicolor/icon-theme.cache"
+
+if [ "$rd" != "xxx" ];then
+    MV
+    [ "`find $r$rd -type f 2>/dev/null`" ] || rm -r $r$rd #del empty
+    #find "$r" "$rd" -type d -empty -delete
+    find $r$rd -type d -empty -delete 2>/dev/null
+fi
+
+
+for d in /usr/share/help /usr/share/doc /usr/share/gtk-doc/html /usr/share/info /usr/share/licenses /usr/share/man ;do
+#	[ -d "$r$d" ] &&  M $r$d $rm "$r$d" 
+#	echo "mv $r$d $r$rm`dirname $d`"
+    if [ "$rm" != "xxx" ] ;then
+	 [ -d $r$d ] && mkdir -p $r$rm`dirname $d` && mv $r$d $r$rm`dirname $d`
+    else [ -d $r$d ] && rm -R $r$d
+    fi
+#	mkdir -p $r$d
+        [ -f "$r/usr/bin/init" ] && mkdir -p "$r$d" #only in 001-base
+done
+
+
+#mim=/usr/share/mime/packages/freedesktop.org.xml ; cp $mim "$mim"1
+#awk '{ if ($0~/<comment xml:lang="/ && $0!~/<comment xml:lang="ru">/) print ""; else print $0}' "$mim"1 >$mim && rm "$mim"1
+
+[ "$g" ] && o2="`cd "$1" && du -sh`" && ntf -w "trim - $(_ 'size optimization complete') </b><small>$1</small><b>" "
+
+$(_ 'Original size:') <b>$o1</b>
+$(_ 'Optimized size:') <b>$o2</b>"

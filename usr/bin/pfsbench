@@ -1,0 +1,507 @@
+#!/bin/sh
+# pfsbench - benchmark .pfs module formats and compressions on this host.
+# Prints build time, on-disk size, load+unload roundtrip, and recommends a
+# profile. busybox-safe: uses date +%s%N, awk, sed, printf. No python.
+#
+# Usage:
+#   pfsbench                         # synthesize ~10 MB payload and benchmark defaults
+#   pfsbench --size small            # ~1 MB
+#   pfsbench --size medium           # ~10 MB (default)
+#   pfsbench --size large            # ~100 MB
+#   pfsbench --source /path/to/dir   # use real payload
+#   pfsbench --runs 3                # roundtrip samples (median used)
+#   pfsbench --csv out.csv           # dump raw numbers
+#   pfsbench <existing-module.pfs>   # benchmark repacking an existing module
+#   pfsbench --help
+#
+PATH="/usr/bin:/usr/sbin:${PATH}"
+export PATH
+if ! command -v pfs >/dev/null 2>&1; then
+    PATH="$(dirname "$0"):${PATH}"
+    export PATH
+fi
+. "$(which pfs)" >/dev/null 2>&1 || true
+
+SIZE_PRESET="medium"
+SOURCE=""
+MODULE=""
+RUNS=3
+CSV=""
+
+usage() {
+    cat <<'EOF'
+pfsbench - measure build/size/load trade-offs for pfs module formats.
+
+Usage:
+    pfsbench [OPTIONS] [--source DIR | MODULE.pfs]
+
+Options:
+    --size small|medium|large   synthesize payload (default: medium ~10 MB)
+    --source DIR                use DIR as payload (overrides --size)
+    --runs N                    roundtrip samples per variant (default 3, min 1)
+    --csv FILE                  append raw measurements as CSV
+    --list-compressors          show available squashfs/erofs compressors
+    --full, --all               run the full sweep (include variants that
+                                lose to the curated ones — use for audits)
+    --decompress, --read        also measure COLD decompression throughput:
+                                drop_caches + read every file in the mounted
+                                module. This is the "time until the program
+                                actually starts" for image-type modules.
+    --debug                     show stderr of failing pfsload/pfsunload calls
+                                (helpful when cold read shows -1)
+    --machine                   emit TSV-only stdout (7-column header + data rows),
+                                no human table, no winners/recommendation block.
+                                note: --list-compressors takes precedence over --machine
+    -h, --help                  show this help
+
+If a MODULE.pfs is passed, pfsbench first extracts it with `pfsextract -d`,
+then benchmarks repacking in every supported format/compression pair.
+EOF
+    exit 0
+}
+
+die() { printf 'pfsbench: %s\n' "$*" >&2; exit 1; }
+
+for a in "$@"; do
+    case "$a" in
+        -h|--help) usage ;;
+    esac
+done
+
+FULL=""
+DECOMPRESS=""
+DEBUG=""
+MACHINE_MODE=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --size)    SIZE_PRESET="$2"; shift 2 ;;
+        --source)  SOURCE="$2"; shift 2 ;;
+        --runs)    RUNS="$2"; shift 2 ;;
+        --csv)     CSV="$2"; shift 2 ;;
+        --full|--all) FULL=1; shift ;;
+        --decompress|--read) DECOMPRESS=1; shift ;;
+        --debug) DEBUG=1; shift ;;
+        --machine) MACHINE_MODE=1; shift ;;
+        --)        shift; break ;;
+        --list-compressors|--list)
+            printf 'squashfs compressors (mksquashfs):\n'
+            mksquashfs -help-section compression 2>&1 \
+                | awk '/Compressors available:/{flag=1;next} /^-/{flag=0} flag && NF {gsub(/[ \t]+/,""); gsub(/\(default\)/,""); if (length) print "  " $0}'
+            printf '\nerofs compressors (mkfs.erofs):\n'
+            mkfs.erofs --version 2>&1 \
+                | awk -F': ' '/available compressors/ {gsub(/,/, "", $2); n=split($2,c," "); for (i=1;i<=n;i++) if (c[i]!="") print "  " c[i]}'
+            printf '\n(pfsbench actually benchmarks these on your payload — run `pfsbench --size small`)\n'
+            exit 0
+            ;;
+        -*)        die "unknown option: $1" ;;
+        *)         MODULE="$1"; shift ;;
+    esac
+done
+
+case "${RUNS}" in
+    ''|*[!0-9]*) RUNS=3 ;;
+esac
+[ "${RUNS}" -lt 1 ] && RUNS=1
+
+command -v mkpfs       >/dev/null 2>&1 || die "mkpfs missing"
+command -v mksquashfs  >/dev/null 2>&1 || die "mksquashfs missing"
+command -v pfsload     >/dev/null 2>&1 || die "pfsload missing"
+command -v pfsunload   >/dev/null 2>&1 || die "pfsunload missing"
+[ "$(id -u)" -eq 0 ] || die "must run as root (pfsload/pfsunload need it)"
+pfs_aufs_only_runtime "$(basename "$0")" || exit $?
+
+# Prefer a disk-backed scratch dir when /tmp is tmpfs and module-extraction
+# would blow past it. Respect PFSBENCH_TMP override; else /var/tmp; else /tmp.
+_pfsbench_tmp_root="${PFSBENCH_TMP:-}"
+if [ -z "${_pfsbench_tmp_root}" ]; then
+    for _cand in /var/tmp /var/cache /tmp ; do
+        [ -d "${_cand}" ] && [ -w "${_cand}" ] && { _pfsbench_tmp_root="${_cand}"; break; }
+    done
+fi
+WORK="$(mktemp -d -p "${_pfsbench_tmp_root:-/tmp}" pfsbench.XXXXXX)" \
+    || die "mktemp failed"
+trap 'rm -rf "${WORK}"' EXIT INT TERM
+
+PAYLOAD="${WORK}/payload"
+mkdir -p "${PAYLOAD}"
+
+prep_payload() {
+    if [ -n "${MODULE}" ] && [ -f "${MODULE}" ]; then
+        printf 'extracting %s ...\n' "${MODULE}" >&2
+        pfsextract -d "${MODULE}" -o "${WORK}/extracted" >/dev/null 2>&1 \
+            || die "pfsextract -d failed for ${MODULE}"
+        base="$(basename "${MODULE}" ".${EXT}")"
+        # Skip the cp -a: use the extracted tree directly. A 500 MB module in
+        # tmpfs cannot afford to be duplicated and then packed into 12 more
+        # images.  PAYLOAD is an empty dir here — drop it and reassign.
+        rmdir "${PAYLOAD}" 2>/dev/null || true
+        if [ -d "${WORK}/extracted/${base}" ]; then
+            PAYLOAD="${WORK}/extracted/${base}"
+        else
+            PAYLOAD="${WORK}/extracted"
+        fi
+        return
+    fi
+    if [ -n "${SOURCE}" ]; then
+        [ -d "${SOURCE}" ] || die "--source: '${SOURCE}' is not a directory"
+        cp -a "${SOURCE}/." "${PAYLOAD}/"
+        return
+    fi
+    case "${SIZE_PRESET}" in
+        small)  blocks=8;   texts=2  ;;
+        medium) blocks=64;  texts=8  ;;
+        large)  blocks=640; texts=80 ;;
+        *) die "--size must be small|medium|large" ;;
+    esac
+    mkdir -p "${PAYLOAD}/text" "${PAYLOAD}/random" "${PAYLOAD}/mixed"
+    i=0
+    while [ ${i} -lt ${texts} ]; do
+        yes "The quick brown fox jumps over the lazy dog. " 2>/dev/null \
+            | head -c 131072 > "${PAYLOAD}/text/t${i}.txt"
+        awk 'BEGIN { for(j=0;j<4096;j++) print j, "lorem ipsum dolor sit amet consectetur" }' \
+            > "${PAYLOAD}/text/a${i}.txt"
+        i=$((i+1))
+    done
+    dd if=/dev/urandom of="${PAYLOAD}/random/entropy.bin" bs=4096 count=${blocks} 2>/dev/null
+    dd if=/dev/zero    of="${PAYLOAD}/mixed/zeros.bin"    bs=4096 count=$((blocks/2)) 2>/dev/null
+}
+
+prep_payload
+
+SRC_KB=$(du -sk "${PAYLOAD}" 2>/dev/null | awk '{print $1}')
+
+ms_now() { date +%s%N | awk '{ printf "%d\n", $1/1000000 }'; }
+
+time_ms() {
+    t0=$(ms_now)
+    "$@" >/dev/null 2>&1
+    t1=$(ms_now)
+    echo $((t1 - t0))
+}
+
+size_kb() {
+    [ -f "$1" ] || { echo 0; return; }
+    s=$(stat -c %s "$1" 2>/dev/null || wc -c < "$1")
+    echo $(( (s + 1023) / 1024 ))
+}
+
+median3() {
+    printf '%s\n%s\n%s\n' "$1" "$2" "$3" | sort -n | sed -n 2p
+}
+
+median_n() {
+    # median of N integers passed as space-separated args
+    n=$#
+    printf '%s\n' "$@" | sort -n | sed -n "$(( (n+1)/2 ))p"
+}
+
+cold_read_ms() {
+    # $1 = image path. Returns ms to read every file in the mounted module
+    # after dropping page caches (true decompression cost). Returns -1 on
+    # failure and captures the failing command stderr to PFSBENCH_LAST_ERR
+    # (visible on console only when --debug is set).
+    img="$1"
+    load_err=$(pfsload "${img}" 2>&1 >/dev/null) || {
+        PFSBENCH_LAST_ERR="pfsload failed for ${img}: ${load_err}"
+        [ -n "${DEBUG}" ] && printf "  [debug] %s\n" "${PFSBENCH_LAST_ERR}" >&2
+        # try to clean up a half-mount if one happened
+        pfsunload "${img}" >/dev/null 2>&1 || true
+        # ensure no stale loop devices are holding the image
+        losetup -j "${img}" 2>/dev/null | awk -F: \
+            '{sub(/^[ \t]+/, "", $1); print $1}' | \
+            while read -r loop; do
+                [ -n "${loop}" ] && losetup -d "${loop}" 2>/dev/null || true
+            done
+        echo "-1"
+        return
+    }
+    mp="/mnt/.$(basename "${img}")"
+    if [ ! -d "${mp}" ]; then
+        PFSBENCH_LAST_ERR="mountpoint ${mp} missing after pfsload ${img}"
+        [ -n "${DEBUG}" ] && printf "  [debug] %s\n" "${PFSBENCH_LAST_ERR}" >&2
+        pfsunload "${img}" >/dev/null 2>&1 || true
+        echo "-1"
+        return
+    fi
+    sync
+    echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+    t0=$(ms_now)
+    find "${mp}" -type f -print0 2>/dev/null \
+        | xargs -0 -r cat >/dev/null 2>&1
+    t1=$(ms_now)
+    unload_err=$(pfsunload "${img}" 2>&1 >/dev/null) || {
+        PFSBENCH_LAST_ERR="pfsunload failed for ${img}: ${unload_err}"
+        [ -n "${DEBUG}" ] && printf "  [debug] %s\n" "${PFSBENCH_LAST_ERR}" >&2
+    }
+    echo $((t1 - t0))
+}
+
+roundtrip_ms() {
+    # Take $RUNS samples, return median ms.
+    img="$1"
+    samples=""
+    k=0
+    while [ ${k} -lt ${RUNS} ]; do
+        t0=$(ms_now)
+        pfsload   "${img}" >/dev/null 2>&1
+        pfsunload "${img}" >/dev/null 2>&1
+        t1=$(ms_now)
+        samples="${samples} $((t1 - t0))"
+        k=$((k+1))
+    done
+    # shellcheck disable=SC2086
+    median_n ${samples}
+}
+
+CSV_HEADER='variant,size_kb,build_ms,roundtrip_ms,cold_read_ms,runs,source_kb'
+if [ -n "${CSV}" ]; then
+    [ -s "${CSV}" ] || echo "${CSV_HEADER}" > "${CSV}"
+fi
+
+if [ -n "${MACHINE_MODE}" ]; then
+    printf 'variant\tsize_kb\tbuild_ms\troundtrip_ms\tcold_read_ms\truns\tsource_kb\n'
+fi
+
+if [ -z "${MACHINE_MODE}" ]; then
+    printf '\n== pfsbench (payload=%s KB, runs=%s%s) ==\n\n' \
+        "${SRC_KB:-?}" "${RUNS}" "${DECOMPRESS:+ +decompress}"
+    if [ -n "${DECOMPRESS}" ]; then
+        printf '%-18s | %9s | %10s | %12s | %12s\n' "variant" "size KB" "build ms" "roundtrip ms" "cold read ms"
+        printf -- '-------------------+-----------+------------+--------------+--------------\n'
+    else
+        printf '%-18s | %9s | %10s | %14s\n' "variant" "size KB" "build ms" "roundtrip ms"
+        printf -- '-------------------+-----------+------------+----------------\n'
+    fi
+fi
+
+BEST_LOAD_MS=99999999; BEST_LOAD_VARIANT=""
+BEST_SIZE_KB=99999999; BEST_SIZE_VARIANT=""
+BEST_BUILD_MS=99999999; BEST_BUILD_VARIANT=""
+
+skip_row() {
+    # $1 = variant label, $2 = reason
+    if [ -n "${MACHINE_MODE}" ]; then
+        return
+    fi
+    if [ -n "${DECOMPRESS}" ]; then
+        printf '%-18s | %9s | %10s | %12s | %12s\n' "$1" "-" "-" "SKIP" "$2"
+    else
+        printf '%-18s | %9s | %10s | %14s\n' "$1" "-" "-" "SKIP ($2)"
+    fi
+}
+
+row() {
+    label="$1"; img="$2"; build_ms="$3"
+    sz=$(size_kb "${img}")
+    rt=$(roundtrip_ms "${img}")
+    cr="-1"
+    if [ -n "${DECOMPRESS}" ]; then
+        cr=$(cold_read_ms "${img}")
+    fi
+    if [ -z "${MACHINE_MODE}" ]; then
+        if [ -n "${DECOMPRESS}" ]; then
+            printf '%-18s | %9s | %10s | %12s | %12s\n' "${label}" "${sz}" "${build_ms}" "${rt}" "${cr}"
+        else
+            printf '%-18s | %9s | %10s | %14s\n' "${label}" "${sz}" "${build_ms}" "${rt}"
+        fi
+    else
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${label}" "${sz}" "${build_ms}" "${rt}" "${cr}" "${RUNS}" "${SRC_KB}"
+    fi
+    [ -n "${CSV}" ] && printf '%s,%s,%s,%s,%s,%s,%s\n' "${label}" "${sz}" "${build_ms}" "${rt}" "${cr}" "${RUNS}" "${SRC_KB}" >> "${CSV}"
+    if [ "${rt}" -lt "${BEST_LOAD_MS}" ]; then
+        BEST_LOAD_MS="${rt}"; BEST_LOAD_VARIANT="${label}"
+    fi
+    if [ "${sz}" -lt "${BEST_SIZE_KB}" ] && [ "${sz}" -gt 0 ]; then
+        BEST_SIZE_KB="${sz}"; BEST_SIZE_VARIANT="${label}"
+    fi
+    if [ "${build_ms}" -lt "${BEST_BUILD_MS}" ]; then
+        BEST_BUILD_MS="${build_ms}"; BEST_BUILD_VARIANT="${label}"
+    fi
+    if [ -n "${DECOMPRESS}" ] && [ "${cr}" != "-" ]; then
+        case "${cr}" in ''|-*|*[!0-9]*) ;;
+            *)
+                if [ -z "${BEST_READ_MS:-}" ] || [ "${cr}" -lt "${BEST_READ_MS}" ]; then
+                    BEST_READ_MS="${cr}"
+                    BEST_READ_VARIANT="${label}"
+                fi
+                ;;
+        esac
+    fi
+    # Free the image right after measurement — tmpfs fills up fast on
+    # low-RAM hosts with large payloads (~500 MB).  Each compressed image
+    # can be 200-600 MB; keeping 12 at once blows the budget.
+    rm -f "${img}" 2>/dev/null || true
+}
+
+# =====================================================================
+# Curated compression sweep (--full adds dominated variants for audits)
+# =====================================================================
+# Source the list from `-help-section compression` (the main `-help` omits it
+# in squashfs-tools 4.7+).  Probe erofs via `mkfs.erofs --version`.
+sq_caps="$(mksquashfs -help-section compression 2>&1)"
+sq_has() { printf '%s' "$sq_caps" | grep -qiw "$1" ; }
+
+if command -v mkpfs-erofs >/dev/null 2>&1 && command -v mkfs.erofs >/dev/null 2>&1 ; then
+    er_avail=1
+    er_caps="$(mkfs.erofs --version 2>&1)"
+    er_has() { printf '%s' "$er_caps" | grep -qw "$1" ; }
+
+    # Probe which erofs compressors the RUNNING KERNEL can actually mount.
+    # mkfs.erofs may be compiled with LZMA/DEFLATE/ZSTD support while the
+    # kernel is not — pfsload would then fail with "fsconfig() failed:
+    # Unsupported operation". Cache the result once per pfsbench run.
+    _er_kernel_capable() {
+        # $1 = compressor name (lzma|deflate|zstd|lz4)
+        case "$1" in
+            lz4) return 0 ;;  # always compiled statically in erofs
+        esac
+        # /proc/config.gz is the authoritative answer when available
+        if [ -r /proc/config.gz ]; then
+            case "$1" in
+                lzma)    zcat /proc/config.gz | grep -q '^CONFIG_EROFS_FS_ZIP_LZMA=y' ;;
+                deflate) zcat /proc/config.gz | grep -q '^CONFIG_EROFS_FS_ZIP_DEFLATE=y' ;;
+                zstd)    zcat /proc/config.gz | grep -q '^CONFIG_EROFS_FS_ZIP_ZSTD=y' ;;
+            esac
+            return $?
+        fi
+        # Fallback: /boot/config-$(uname -r)
+        cfg="/boot/config-$(uname -r)"
+        if [ -r "${cfg}" ]; then
+            case "$1" in
+                lzma)    grep -q '^CONFIG_EROFS_FS_ZIP_LZMA=y' "${cfg}" ;;
+                deflate) grep -q '^CONFIG_EROFS_FS_ZIP_DEFLATE=y' "${cfg}" ;;
+                zstd)    grep -q '^CONFIG_EROFS_FS_ZIP_ZSTD=y' "${cfg}" ;;
+            esac
+            return $?
+        fi
+        # Unknown — assume supported (let it fail loudly in cold_read if not)
+        return 0
+    }
+else
+    er_avail=0
+fi
+
+# ----- Curated baseline (four canonical profiles per family) --------------
+# squashfs: xz (smallest), gzip (small+fast build), zstd15 (balanced),
+#           lz4hc (fast-build variant of the format)
+# erofs:    lz4 (fastest), lzma6 (balanced), lzma-extr (best load),
+#           zstd3 (fastest build, also good load)
+
+IMG="${WORK}/sq_xz.${EXT}"
+BT=$(time_ms mksquashfs "${PAYLOAD}" "${IMG}" -noappend -b 512K -comp xz -Xbcj x86)
+row "squashfs xz"       "${IMG}" "${BT}"
+
+IMG="${WORK}/sq_gzip.${EXT}"
+BT=$(time_ms mksquashfs "${PAYLOAD}" "${IMG}" -noappend -b 512K -comp gzip)
+row "squashfs gzip"     "${IMG}" "${BT}"
+
+if sq_has zstd ; then
+    IMG="${WORK}/sq_zstd15.${EXT}"
+    BT=$(time_ms mksquashfs "${PAYLOAD}" "${IMG}" -noappend -b 512K -comp zstd -Xcompression-level 15)
+    row "squashfs zstd15"   "${IMG}" "${BT}"
+fi
+
+IMG="${WORK}/sq_lz4hc.${EXT}"
+BT=$(time_ms mksquashfs "${PAYLOAD}" "${IMG}" -noappend -b 512K -comp lz4 -Xhc)
+row "squashfs lz4hc"    "${IMG}" "${BT}"
+
+if [ "$er_avail" = 1 ]; then
+    IMG="${WORK}/er_lz4.${EXT}"
+    BT=$(time_ms mkpfs-erofs -o "${IMG}" -zlz4 "${PAYLOAD}")
+    row "erofs lz4"         "${IMG}" "${BT}"
+
+    if er_has lzma ; then
+        if _er_kernel_capable lzma ; then
+            IMG="${WORK}/er_lzma6.${EXT}"
+            BT=$(time_ms mkpfs-erofs -o "${IMG}" -zlzma "${PAYLOAD}")
+            row "erofs lzma6"       "${IMG}" "${BT}"
+
+            IMG="${WORK}/er_lzma109.${EXT}"
+            BT=$(time_ms mkpfs-erofs -o "${IMG}" -zlzma,level=109 "${PAYLOAD}")
+            row "erofs lzma-extr"   "${IMG}" "${BT}"
+        else
+            skip_row "erofs lzma6"     "kernel lacks EROFS_FS_ZIP_LZMA"
+            skip_row "erofs lzma-extr" "kernel lacks EROFS_FS_ZIP_LZMA"
+        fi
+    fi
+
+    if er_has zstd ; then
+        if _er_kernel_capable zstd ; then
+            IMG="${WORK}/er_zstd.${EXT}"
+            BT=$(time_ms mkpfs-erofs -o "${IMG}" -zzstd "${PAYLOAD}")
+            row "erofs zstd3"       "${IMG}" "${BT}"
+        else
+            skip_row "erofs zstd3" "kernel lacks EROFS_FS_ZIP_ZSTD"
+        fi
+    fi
+fi
+
+# ----- --full: add variants known to lose to the curated set --------------
+if [ -n "${FULL}" ]; then
+    if sq_has zstd ; then
+        IMG="${WORK}/sq_zstd22.${EXT}"
+        BT=$(time_ms mksquashfs "${PAYLOAD}" "${IMG}" -noappend -b 512K -comp zstd -Xcompression-level 22)
+        row "squashfs zstd22"   "${IMG}" "${BT}"
+    fi
+    if sq_has lzo ; then
+        IMG="${WORK}/sq_lzo.${EXT}"
+        BT=$(time_ms mksquashfs "${PAYLOAD}" "${IMG}" -noappend -b 512K -comp lzo)
+        row "squashfs lzo"      "${IMG}" "${BT}"
+    fi
+    if sq_has lzma ; then
+        IMG="${WORK}/sq_lzma.${EXT}"
+        BT=$(time_ms mksquashfs "${PAYLOAD}" "${IMG}" -noappend -b 512K -comp lzma)
+        row "squashfs lzma"     "${IMG}" "${BT}"
+    fi
+    if [ "$er_avail" = 1 ]; then
+        IMG="${WORK}/er_lz4hc.${EXT}"
+        BT=$(time_ms mkpfs-erofs -o "${IMG}" "${PAYLOAD}")
+        row "erofs lz4hc"       "${IMG}" "${BT}"
+
+        if er_has lzma && _er_kernel_capable lzma ; then
+            IMG="${WORK}/er_lzma9.${EXT}"
+            BT=$(time_ms mkpfs-erofs -o "${IMG}" -zlzma,level=9 "${PAYLOAD}")
+            row "erofs lzma9"       "${IMG}" "${BT}"
+        fi
+        if er_has deflate && _er_kernel_capable deflate ; then
+            IMG="${WORK}/er_deflate.${EXT}"
+            BT=$(time_ms mkpfs-erofs -o "${IMG}" -zdeflate "${PAYLOAD}")
+            row "erofs deflate"     "${IMG}" "${BT}"
+        fi
+        if er_has libdeflate && _er_kernel_capable deflate ; then
+            IMG="${WORK}/er_libdef.${EXT}"
+            BT=$(time_ms mkpfs-erofs -o "${IMG}" -zlibdeflate,level=12 "${PAYLOAD}")
+            row "erofs libdef12"    "${IMG}" "${BT}"
+        fi
+        if er_has zstd && _er_kernel_capable zstd ; then
+            IMG="${WORK}/er_zstd22.${EXT}"
+            BT=$(time_ms mkpfs-erofs -o "${IMG}" -zzstd,level=22 "${PAYLOAD}")
+            row "erofs zstd22"      "${IMG}" "${BT}"
+        fi
+    fi
+fi
+
+if [ -z "${MACHINE_MODE}" ]; then
+    if [ -n "${DECOMPRESS}" ]; then
+        printf -- '-------------------+-----------+------------+--------------+--------------\n'
+    else
+        printf -- '-------------------+-----------+------------+----------------\n'
+    fi
+    printf '\nWinners:\n'
+    printf '  smallest image       : %-20s (%s KB)\n' "${BEST_SIZE_VARIANT:-n/a}" "${BEST_SIZE_KB}"
+    printf '  fastest load+unload  : %-20s (%s ms)\n' "${BEST_LOAD_VARIANT:-n/a}" "${BEST_LOAD_MS}"
+    printf '  fastest build        : %-20s (%s ms)\n' "${BEST_BUILD_VARIANT:-n/a}" "${BEST_BUILD_MS}"
+    [ -n "${DECOMPRESS}" ] && printf '  fastest cold read    : %-20s (%s ms)\n' "${BEST_READ_VARIANT:-n/a}" "${BEST_READ_MS:-n/a}"
+
+    printf '\nRecommendation:\n'
+    if [ -n "${MODULE}" ]; then
+        printf '  For %s specifically, repack commands:\n' "${MODULE}"
+        printf '    pfsinfo --advise %s\n\n' "${MODULE}"
+    else
+        printf '  erofs lzma   -> fastest load + decent compression (best default for runtime modules)\n'
+        printf '  squashfs xz  -> smallest image (best for read-mostly / shipped filesystems)\n'
+        printf '  erofs lz4    -> fastest rebuild (best for CI / dev loops)\n\n'
+    fi
+
+    [ -n "${CSV}" ] && printf 'Raw data: %s\n' "${CSV}"
+fi

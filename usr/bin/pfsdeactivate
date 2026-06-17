@@ -1,0 +1,141 @@
+#!/bin/sh
+
+PATH="/usr/bin:/usr/sbin:${PATH}"
+export PATH
+
+if ! command -v pfs >/dev/null 2>&1; then
+    PATH="$(dirname "$0"):${PATH}"
+    export PATH
+fi
+
+# shellcheck source=/workspace/pfs-utils/usr/bin/pfs
+. "$(which pfs)"
+
+if [ -z "${UID:-}" ]; then
+    UID="$(id -u 2>/dev/null)"
+    export UID
+fi
+
+state_base="/run"
+
+usage() {
+    cat <<EOF
+$(printf '%s %s [--persist DIR] MODULE.%s' "$(_ 'Usage:')" "$(basename "$0")" "${EXT}")
+EOF
+}
+
+activation_root() {
+    printf '%s/pfs-utils/symlink-activations\n' "${state_base%/}"
+}
+
+module_name_from_arg() {
+    module_base="$(basename "$1")"
+    case "${module_base}" in
+        *."${EXT}") module_base="${module_base%.${EXT}}" ;;
+    esac
+    printf '%s\n' "${module_base}"
+}
+
+show_help=""
+need_persist=""
+module_arg=""
+
+for arg in "$@"; do
+    if [ -n "${need_persist}" ]; then
+        state_base="${arg}"
+        need_persist=""
+        continue
+    fi
+
+    case "${arg}" in
+        -h|--help)
+            show_help="yes"
+            ;;
+        --persist)
+            need_persist="yes"
+            ;;
+        -* )
+            invalid_opt="$(printf '%s' "${arg}" | tr -d '-')"
+            exitmsg "$(printf "$(_ '%s: invalid option -- %s')" "$(basename "$0")" "${invalid_opt}")" 1
+            ;;
+        *)
+            if [ -n "${module_arg}" ]; then
+                exitmsg "$(printf "$(_ '%s: too many arguments')" "$(basename "$0")")" 1
+            fi
+            module_arg="${arg}"
+            ;;
+    esac
+done
+
+if [ -n "${need_persist}" ]; then
+    exitmsg "$(printf "$(_ '%s: --persist requires DIR')" "$(basename "$0")")" 1
+fi
+
+if [ -n "${show_help}" ]; then
+    usage
+    exit 0
+fi
+
+if [ -z "${module_arg}" ]; then
+    usage
+    exit 1
+fi
+
+allow_only_root
+
+module_name="$(module_name_from_arg "${module_arg}")"
+state_dir="$(activation_root)/${module_name}"
+mount_dir="${state_dir}/mount"
+state_file="${state_dir}/state"
+
+if [ ! -d "${state_dir}" ]; then
+    exitmsg "$(printf "$(_ 'pfsdeactivate: not activated: %s')" "${module_name}")" 1
+fi
+
+mount_real="$(realpath "${mount_dir}" 2>/dev/null)"
+if [ -z "${mount_real}" ]; then
+    mount_real="${mount_dir}"
+fi
+
+if [ -f "${state_file}" ]; then
+    awk 'NF { lines[NR]=$0 } END { for (i=NR; i>=1; i--) print lines[i] }' "${state_file}" |
+    while IFS= read -r rel_path; do
+        target="/${rel_path}"
+        parent_dir="$(dirname "${target}")"
+        backup_path="${parent_dir}/.pfs.org.$(basename "${target}")"
+
+        if [ -L "${target}" ]; then
+            if link_target="$(readlink "${target}" 2>/dev/null)"; then
+                case "${link_target}" in
+                    "${mount_real}"/*)
+                        rm -f "${target}"
+                        ;;
+                esac
+            fi
+        fi
+
+        if [ -e "${backup_path}" ] || [ -L "${backup_path}" ]; then
+            mv "${backup_path}" "${target}" || exit 1
+        fi
+    done || exitmsg "$(printf "$(_ 'pfsdeactivate: unable to restore files for %s')" "${module_name}")" 5
+fi
+
+cleanup_errors=0
+if ! umountb "${mount_dir}" 2>/dev/null; then
+    if mountpoint -q "${mount_dir}" 2>/dev/null; then
+        cleanup_errors=1
+        printf "$(_ '%s: warning: failed to unmount %s')\n" "$(basename "$0")" "${mount_dir}" >&2
+    fi
+fi
+rm -f "${state_dir}/files.list" 2>/dev/null
+rmdir "${mount_dir}" 2>/dev/null
+rm -f "${state_file}" 2>/dev/null
+rmdir "${state_dir}" 2>/dev/null
+
+if [ "${cleanup_errors}" -ne 0 ]; then
+    printf "$(_ 'pfsdeactivate: deactivated %s with cleanup warnings')\n" "${module_name}" >&2
+    exit 5
+fi
+
+printf "$(_ 'pfsdeactivate: deactivated %s')\n" "${module_name}"
+exit 0

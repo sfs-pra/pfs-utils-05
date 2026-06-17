@@ -1,0 +1,76 @@
+.TH PFSUNINSTALL 8 "2026-05-06" "pfs-utils-cli" "PuppyRus PFS Module Tools"
+.SH NAME
+pfsuninstall \- remove an installed pfs package from the system
+.SH SYNOPSIS
+.B pfsuninstall
+\fIPACKAGE\fR
+.SH DESCRIPTION
+.B pfsuninstall
+removes a package that was previously installed with
+.BR "pfsextract \-i" .
+It reads the package's
+.B pfs.files
+manifest from the install registry, deletes each listed file that is not also
+owned by another installed or mounted package, and removes the registry entry.
+.PP
+After removing files,
+.B pfsuninstall
+triggers background cache updates:
+.BR depmod (8)
+if kernel modules were removed,
+.BR ldconfig (8)
+if shared libraries were removed, and
+.BR glib\-compile\-schemas (1)
+if GLib schemas were removed.
+.PP
+For container modules,
+.B pfsuninstall
+recursively uninstalls each sub-package.
+.SH ARGUMENTS
+.TP
+.I PACKAGE
+Package name or path to a
+.B .pfs
+file.
+The
+.B .pfs
+extension is stripped automatically.
+.SH EXAMPLES
+.PP
+Uninstall a package by name:
+.RS
+.nf
+pfsuninstall myapp
+.fi
+.RE
+.PP
+Uninstall using the module file path:
+.RS
+.nf
+pfsuninstall /srv/modules/myapp.pfs
+.fi
+.RE
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+Package not installed, or uninstall already in progress.
+.SH FILES
+.TP
+.I /var/lib/pfs-utils/install/<package>/pfs.files
+File manifest read during uninstall.
+.TP
+.I /etc/packages/install/<package>/
+Legacy v4 install location, also cleaned up when present.
+.TP
+.I /tmp/.pfs/uninstall/<package>/
+Lock directory preventing concurrent uninstalls of the same package.
+.SH SEE ALSO
+.BR pfsextract (8),
+.BR pfsinfo (8),
+.BR pfsrebuild (8),
+.BR pfs\-utils (8)
+.SH AUTHORS
+PuppyRus pfs-utils maintainers.

@@ -1,0 +1,923 @@
+#!/bin/sh
+# pfsrun — friendly launcher for PFS module GUI apps.
+# Wraps `pfsexec` with sane defaults for the current desktop session:
+# auto-binds /proc /sys /dev /run/user/$UID /tmp/.X11-unix, drops
+# privileges to the invoking user via runuser, propagates Wayland/X11
+# environment, and auto-detects the main binary from the module name.
+
+PATH="/usr/bin:/usr/sbin:${PATH}"
+script_dir="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
+PATH="${script_dir}:${PATH}"
+export PATH
+
+set -u
+
+: "${TEXTDOMAIN:=pfs-utils}"
+: "${TEXTDOMAINDIR:=/usr/share/locale}"
+export TEXTDOMAIN TEXTDOMAINDIR
+_() {
+    if command -v gettext >/dev/null 2>&1; then
+        gettext -- "$1"
+    else
+        printf '%s' "$1"
+    fi
+}
+
+usage() {
+    printf '%s\n' "$(_ 'Usage: pfsrun [OPTIONS] MODULE.pfs [COMMAND [ARGS...]]')"
+    printf '%s\n' "$(_ '       pfsrun [OPTIONS] -m MOD1.pfs [-m MOD2.pfs ...] [-- COMMAND [ARGS...]]')"
+    printf '\n%s\n\n' "$(_ 'Run an application from a PFS module in an overlay namespace with desktop-session defaults.')"
+    printf '%s\n' "$(_ 'Options:')"
+    printf '%s\n' "$(_ '  -h, --help          Show this help.')"
+    printf '%s\n' "$(_ '  -m MODULE           Add module to overlay (repeatable).')"
+    printf '%s\n' "$(_ '  --bind PATH         Extra bind mount inside the namespace (repeatable).')"
+    printf '%s\n' "$(_ '  --exec PATH         Override main binary path (skip auto-detect).')"
+    printf '%s\n' "$(_ '  --shell             Drop into an interactive shell inside the namespace.')"
+    printf '%s\n' "$(_ '  --user USER         Drop privileges to USER (default: $SUDO_USER).')"
+    printf '%s\n' "$(_ '  --root              Run as root inside namespace (no privilege drop).')"
+    printf '%s\n' "$(_ '  --no-gui            Skip GUI binds and Wayland/X11 env propagation.')"
+    printf '%s\n' "$(_ '  --no-home           Do NOT bind-mount the target user HOME into the namespace.')"
+    printf '%s\n' "$(_ '  --persist DIR       Use DIR/upper and DIR/work for overlay storage.')"
+    printf '%s\n' "$(_ '  --register         Mark launch for user-session desktop/icon export metadata forwarding.')"
+    printf '%s\n' "$(_ '  --unregister       Cleanup exported desktop/icon artifacts from manifests (user-only).')"
+    printf '%s\n' "$(_ '  --all              With --unregister: cleanup all manifests under export cache.')"
+    printf '%s\n' "$(_ '  -v, --verbose       Print the resolved pfsexec command on stderr.')"
+    printf '%s\n' "$(_ '  --                  End of options; treat the rest as COMMAND ARGS.')"
+    printf '\n%s\n' "$(_ 'Auto-discovery: when COMMAND is omitted, pfsrun derives the main binary from the first module name.')"
+    printf '%s\n' "$(_ 'If auto-detect fails, pfsrun opens an interactive shell with a marked PS1 prompt.')"
+    printf '\n%s\n' "$(_ 'Examples:')"
+    printf '%s\n' '  pfsrun /mnt/firefox.pfs'
+    printf '%s\n' '  pfsrun /modules/netsurf.pfs https://example.com'
+    printf '%s\n' '  pfsrun --shell /mnt/firefox.pfs'
+    printf '%s\n' '  pfsrun --exec /opt/firefox/firefox /mnt/firefox.pfs --new-instance'
+    printf '%s\n' '  pfsrun --no-gui --root module.pfs /usr/bin/some-cli arg'
+}
+
+fail() {
+    printf 'pfsrun: %s\n' "$1" >&2
+    exit "${2:-1}"
+}
+
+append_line() {
+    if [ -z "$1" ]; then
+        printf '%s' "$2"
+    else
+        printf '%s\n%s' "$1" "$2"
+    fi
+}
+
+pfsrun_xdg_data_home_from_home() {
+    user_home="$1"
+    xdg_data_default="${user_home%/}/.local/share"
+    xdg_data_candidate="${XDG_DATA_HOME:-}"
+    if pfsrun_path_is_unsafe_system_scope "${xdg_data_candidate}"; then
+        printf '%s' "${xdg_data_default}"
+        return 0
+    fi
+    if [ -n "${xdg_data_candidate}" ]; then
+        printf '%s' "${xdg_data_candidate}"
+    else
+        printf '%s' "${xdg_data_default}"
+    fi
+}
+
+pfsrun_xdg_cache_home_from_home() {
+    user_home="$1"
+    xdg_cache_default="${user_home%/}/.cache"
+    xdg_cache_candidate="${XDG_CACHE_HOME:-}"
+    if pfsrun_path_is_unsafe_system_scope "${xdg_cache_candidate}"; then
+        printf '%s' "${xdg_cache_default}"
+        return 0
+    fi
+    if [ -n "${xdg_cache_candidate}" ]; then
+        printf '%s' "${xdg_cache_candidate}"
+    else
+        printf '%s' "${xdg_cache_default}"
+    fi
+}
+
+pfsrun_path_is_unsafe_system_scope() {
+    path_raw="$1"
+    [ -n "${path_raw}" ] || return 1
+
+    case "${path_raw}" in
+        /*) ;;
+        *)
+            return 0
+            ;;
+    esac
+
+    pfsrun_path_has_normalization_markers() {
+        case "$1" in
+            *'/../'*|*'/./'*|*'//'*|*'/..'|*'/.' )
+                return 0
+                ;;
+        esac
+        return 1
+    }
+
+    path_eval=""
+    if command -v realpath >/dev/null 2>&1; then
+        path_eval="$(realpath -m -- "${path_raw}" 2>/dev/null || true)"
+        if [ -z "${path_eval}" ]; then
+            if pfsrun_path_has_normalization_markers "${path_raw}"; then
+                return 0
+            fi
+            path_eval="${path_raw}"
+        fi
+    else
+        if pfsrun_path_has_normalization_markers "${path_raw}"; then
+            return 0
+        fi
+        path_eval="${path_raw}"
+    fi
+
+    case "${path_eval}" in
+        /|/usr|/usr/*|/var|/var/*|/etc|/etc/*|/opt|/opt/*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+pfsrun_xdg_applications_root_from_home() {
+    user_home="$1"
+    printf '%s' "$(pfsrun_xdg_data_home_from_home "${user_home}")/applications"
+}
+
+pfsrun_xdg_icons_root_from_home() {
+    user_home="$1"
+    printf '%s' "$(pfsrun_xdg_data_home_from_home "${user_home}")/icons"
+}
+
+pfsrun_xdg_pixmaps_root_from_home() {
+    user_home="$1"
+    printf '%s' "$(pfsrun_xdg_data_home_from_home "${user_home}")/pixmaps"
+}
+
+pfsrun_xdg_exports_cache_root_from_home() {
+    user_home="$1"
+    printf '%s' "$(pfsrun_xdg_cache_home_from_home "${user_home}")/pfsrun/exports"
+}
+
+pfsrun_session_id_generate() {
+    printf 'pfsrun-%s-%s' "$$" "$(date +%s%N)"
+}
+
+pfsrun_manifest_path_for_session() {
+    cache_home="$1"
+    session_id="$2"
+    printf '%s' "${cache_home%/}/pfsrun/exports/${session_id}.manifest"
+}
+
+pfsrun_path_is_under_root() {
+    path="$1"
+    root="$2"
+
+    pfsrun_path_has_normalization_markers() {
+        case "$1" in
+            *'/../'*|*'/./'*|*'//'*|*'/..'|*'/.' )
+                return 0
+                ;;
+        esac
+        return 1
+    }
+
+    [ -n "${path}" ] || return 1
+    [ -n "${root}" ] || return 1
+    case "${root}" in
+        /*) ;;
+        *) return 1 ;;
+    esac
+
+    path_eval=""
+    root_eval=""
+    if command -v realpath >/dev/null 2>&1; then
+        path_eval="$(realpath -m -- "${path}" 2>/dev/null || true)"
+        root_eval="$(realpath -m -- "${root}" 2>/dev/null || true)"
+        if [ -z "${path_eval}" ] || [ -z "${root_eval}" ]; then
+            if pfsrun_path_has_normalization_markers "${path}" || pfsrun_path_has_normalization_markers "${root}"; then
+                return 1
+            fi
+            path_eval="${path}"
+            root_eval="${root}"
+        fi
+    else
+        if pfsrun_path_has_normalization_markers "${path}" || pfsrun_path_has_normalization_markers "${root}"; then
+            return 1
+        fi
+        path_eval="${path}"
+        root_eval="${root}"
+    fi
+
+    case "${path_eval}" in
+        "${root_eval}"|"${root_eval}"/*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+pfsrun_path_is_safe_export_target() {
+    path="$1"
+    apps_root="$2"
+    icons_root="$3"
+    pixmaps_root="$4"
+    cache_root="$5"
+
+    pfsrun_path_is_under_root "${path}" "${apps_root}" && return 0
+    pfsrun_path_is_under_root "${path}" "${icons_root}" && return 0
+    pfsrun_path_is_under_root "${path}" "${pixmaps_root}" && return 0
+    pfsrun_path_is_under_root "${path}" "${cache_root}" && return 0
+    return 1
+}
+
+pfsrun_manifest_iter_files() {
+    manifest_path="$1"
+    [ -f "${manifest_path}" ] || return 0
+
+    while IFS= read -r record_line; do
+        case "${record_line}" in
+            file$(printf '\t')*)
+                printf '%s\n' "${record_line#file$(printf '\t')}"
+                ;;
+        esac
+    done < "${manifest_path}"
+}
+
+pfsrun_manifest_cleanup_paths() {
+    manifest_path="$1"
+    apps_root="$2"
+    icons_root="$3"
+    pixmaps_root="$4"
+    cache_root="$5"
+
+    while IFS= read -r exported_path; do
+        [ -n "${exported_path}" ] || continue
+        if pfsrun_path_is_safe_export_target "${exported_path}" "${apps_root}" "${icons_root}" "${pixmaps_root}" "${cache_root}"; then
+            if [ -f "${exported_path}" ] || [ -L "${exported_path}" ]; then
+                rm -f -- "${exported_path}"
+            fi
+        fi
+    done <<EOF
+$(pfsrun_manifest_iter_files "${manifest_path}")
+EOF
+}
+
+pfsrun_refresh_export_views() {
+    applications_dir="$1"
+    icons_root="$2"
+
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database -q "${applications_dir}" >/dev/null 2>&1 || true
+        find "${applications_dir}" -maxdepth 1 -type f -name '*.desktop' -print -quit 2>/dev/null | grep -q . || rm -f -- "${applications_dir%/}/mimeinfo.cache"
+    fi
+    if command -v gtk4-update-icon-cache >/dev/null 2>&1; then
+        gtk4-update-icon-cache -f -t -q "${icons_root%/}/hicolor" >/dev/null 2>&1 || true
+    elif command -v gtk-update-icon-cache >/dev/null 2>&1; then
+        gtk-update-icon-cache -f -t -q "${icons_root%/}/hicolor" >/dev/null 2>&1 || true
+    fi
+    if [ -d "${icons_root%/}/hicolor" ]; then
+        find "${icons_root%/}/hicolor" -type f ! -name 'icon-theme.cache' -print -quit 2>/dev/null | grep -q . || rm -f -- "${icons_root%/}/hicolor/icon-theme.cache"
+    fi
+    if command -v killall >/dev/null 2>&1; then
+        killall -1 sfwbar >/dev/null 2>&1 || true
+    fi
+}
+
+pfsrun_unregister_cleanup_manifest_stub() {
+    manifest_path="$1"
+    user_home="$2"
+
+    apps_root="$(pfsrun_xdg_applications_root_from_home "${user_home}")"
+    icons_root="$(pfsrun_xdg_icons_root_from_home "${user_home}")"
+    pixmaps_root="$(pfsrun_xdg_pixmaps_root_from_home "${user_home}")"
+    cache_root="$(pfsrun_xdg_exports_cache_root_from_home "${user_home}")"
+
+    pfsrun_manifest_cleanup_paths "${manifest_path}" "${apps_root}" "${icons_root}" "${pixmaps_root}" "${cache_root}"
+}
+
+pfsrun_manifest_module_matches() {
+    manifest_path="$1"
+    module_path="$2"
+    [ -f "${manifest_path}" ] || return 1
+
+    while IFS= read -r record_line; do
+        case "${record_line}" in
+            module$(printf '\t')*)
+                [ "${record_line#module$(printf '\t')}" = "${module_path}" ] && return 0
+                ;;
+        esac
+    done < "${manifest_path}"
+    return 1
+}
+
+pfsrun_module_list_paths() {
+    module_path="$1"
+    unsquashfs -ll "${module_path}" 2>/dev/null | awk '{ print $NF }'
+}
+
+pfsrun_module_cat_path() {
+    module_path="$1"
+    module_entry="$2"
+    module_entry="${module_entry#squashfs-root/}"
+    unsquashfs -cat "${module_path}" "${module_entry}" 2>/dev/null
+}
+
+pfsrun_icon_family_path_is_relevant() {
+    module_entry="$1"
+    icon_name="$2"
+
+    case "${module_entry}" in
+        squashfs-root/usr/share/icons/*/apps/"${icon_name}"|\
+        squashfs-root/usr/share/icons/*/apps/"${icon_name}".png|\
+        squashfs-root/usr/share/icons/*/apps/"${icon_name}".svg|\
+        squashfs-root/usr/share/icons/*/apps/"${icon_name}".xpm|\
+        squashfs-root/usr/share/icons/*/apps/"${icon_name}"-symbolic.svg|\
+        squashfs-root/usr/share/icons/*/status/"${icon_name}"-*.png|\
+        squashfs-root/usr/share/icons/*/status/"${icon_name}"-*.svg|\
+        squashfs-root/usr/share/icons/*/status/"${icon_name}"-*.xpm|\
+        squashfs-root/usr/share/icons/*/emblems/"${icon_name}"-status-*.png|\
+        squashfs-root/usr/share/icons/*/emblems/"${icon_name}"-status-*.svg|\
+        squashfs-root/usr/share/icons/*/emblems/"${icon_name}"-status-*.xpm|\
+        squashfs-root/usr/share/pixmaps/"${icon_name}"|\
+        squashfs-root/usr/share/pixmaps/"${icon_name}".png|\
+        squashfs-root/usr/share/pixmaps/"${icon_name}".svg|\
+        squashfs-root/usr/share/pixmaps/"${icon_name}".xpm)
+            return 0
+            ;;
+    esac
+
+    return 1
+}
+
+pfsrun_remove_module_icon_export() {
+    module_entry="$1"
+    apps_root="$2"
+    icons_root="$3"
+    pixmaps_root="$4"
+    cache_root="$5"
+    target_path=""
+
+    case "${module_entry}" in
+        squashfs-root/usr/share/icons/*)
+            target_path="${icons_root%/}/${module_entry#squashfs-root/usr/share/icons/}"
+            ;;
+        squashfs-root/usr/share/pixmaps/*)
+            target_path="${pixmaps_root%/}/${module_entry#squashfs-root/usr/share/pixmaps/}"
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+
+    if pfsrun_path_is_safe_export_target "${target_path}" "${apps_root}" "${icons_root}" "${pixmaps_root}" "${cache_root}"; then
+        rm -f -- "${target_path}"
+    fi
+}
+
+pfsrun_unregister_cleanup_module_fallback() {
+    user_home="$1"
+    module_path="$2"
+    apps_root="$(pfsrun_xdg_applications_root_from_home "${user_home}")"
+    icons_root="$(pfsrun_xdg_icons_root_from_home "${user_home}")"
+    pixmaps_root="$(pfsrun_xdg_pixmaps_root_from_home "${user_home}")"
+    cache_root="$(pfsrun_xdg_exports_cache_root_from_home "${user_home}")"
+    module_paths="$(pfsrun_module_list_paths "${module_path}" 2>/dev/null || true)"
+    icon_names=""
+
+    [ -n "${module_paths}" ] || return 0
+
+    while IFS= read -r module_entry; do
+        case "${module_entry}" in
+            squashfs-root/usr/share/applications/*.desktop)
+                desktop_name="$(basename "${module_entry}")"
+                target_desktop="${apps_root%/}/${desktop_name}"
+                if [ -f "${target_desktop}" ] && grep -Fq -- "${module_path}" "${target_desktop}" \
+                        && pfsrun_path_is_safe_export_target "${target_desktop}" "${apps_root}" "${icons_root}" "${pixmaps_root}" "${cache_root}"; then
+                    rm -f -- "${target_desktop}"
+                fi
+
+                desktop_icons="$(pfsrun_module_cat_path "${module_path}" "${module_entry}" \
+                    | sed -n 's/^Icon=//p' 2>/dev/null || true)"
+                while IFS= read -r icon_name; do
+                    [ -n "${icon_name}" ] || continue
+                    case "${icon_name}" in
+                        /*|*/*) continue ;;
+                    esac
+                    if ! printf '%s\n' "${icon_names}" | grep -Fxq -- "${icon_name}"; then
+                        icon_names="$(append_line "${icon_names}" "${icon_name}")"
+                    fi
+                done <<EOF
+${desktop_icons}
+EOF
+                ;;
+        esac
+    done <<EOF
+${module_paths}
+EOF
+
+    while IFS= read -r icon_name; do
+        [ -n "${icon_name}" ] || continue
+        while IFS= read -r module_entry; do
+            pfsrun_icon_family_path_is_relevant "${module_entry}" "${icon_name}" || continue
+            pfsrun_remove_module_icon_export "${module_entry}" "${apps_root}" "${icons_root}" "${pixmaps_root}" "${cache_root}"
+        done <<EOF
+${module_paths}
+EOF
+    done <<EOF
+${icon_names}
+EOF
+}
+
+pfsrun_unregister_cleanup_manifest_file() {
+    manifest_path="$1"
+    user_home="$2"
+
+    cache_root="$(pfsrun_xdg_exports_cache_root_from_home "${user_home}")"
+    [ -f "${manifest_path}" ] || return 0
+    pfsrun_path_is_under_root "${manifest_path}" "${cache_root}" || return 0
+
+    pfsrun_unregister_cleanup_manifest_stub "${manifest_path}" "${user_home}"
+    rm -f -- "${manifest_path}"
+}
+
+pfsrun_unregister_cleanup_all() {
+    user_home="$1"
+    cache_root="$(pfsrun_xdg_exports_cache_root_from_home "${user_home}")"
+    [ -d "${cache_root}" ] || return 0
+
+    for manifest_path in "${cache_root}"/*.manifest; do
+        [ -f "${manifest_path}" ] || continue
+        pfsrun_unregister_cleanup_manifest_file "${manifest_path}" "${user_home}"
+    done
+    return 0
+}
+
+pfsrun_unregister_cleanup_module() {
+    user_home="$1"
+    module_path="$2"
+    cache_root="$(pfsrun_xdg_exports_cache_root_from_home "${user_home}")"
+
+    if [ -d "${cache_root}" ]; then
+        for manifest_path in "${cache_root}"/*.manifest; do
+            [ -f "${manifest_path}" ] || continue
+            if pfsrun_manifest_module_matches "${manifest_path}" "${module_path}"; then
+                pfsrun_unregister_cleanup_manifest_file "${manifest_path}" "${user_home}"
+            fi
+        done
+    fi
+    pfsrun_unregister_cleanup_module_fallback "${user_home}" "${module_path}"
+    pfsrun_refresh_export_views \
+        "$(pfsrun_xdg_applications_root_from_home "${user_home}")" \
+        "$(pfsrun_xdg_icons_root_from_home "${user_home}")"
+    return 0
+}
+
+pfsrun_current_user_home() {
+    current_user="${SUDO_USER:-${USER:-}}"
+    if [ -z "${current_user}" ]; then
+        current_user="$(id -un 2>/dev/null || true)"
+    fi
+    current_home=""
+    if [ -n "${current_user}" ]; then
+        current_home="$(getent passwd "${current_user}" 2>/dev/null | cut -d: -f6)"
+    fi
+    [ -n "${current_home}" ] || current_home="${HOME:-/root}"
+    printf '%s' "${current_home}"
+}
+
+# ---- parse arguments ----
+modules=""
+binds=""
+exec_override=""
+target_user=""
+keep_root=0
+no_gui=0
+no_home=0
+persist_dir=""
+verbose=0
+force_shell=0
+register_mode=0
+unregister_mode=0
+unregister_all=0
+unregister_module=""
+command_args=""
+after_module=0
+forced_args=0
+expect_value=""
+
+for arg in "$@"
+do
+    if [ -n "$expect_value" ]; then
+        case "$expect_value" in
+            module)  modules="$(append_line "$modules" "$arg")" ;;
+            bind)    binds="$(append_line "$binds" "$arg")" ;;
+            exec)    exec_override="$arg" ;;
+            user)    target_user="$arg" ;;
+            persist) persist_dir="$arg" ;;
+        esac
+        expect_value=""
+        continue
+    fi
+
+    if [ "$after_module" -eq 1 ] && [ "${unregister_mode}" -eq 0 ]; then
+        command_args="$(append_line "$command_args" "$arg")"
+        continue
+    fi
+
+    case "$arg" in
+        -h|--help)        usage; exit 0 ;;
+        -m)               expect_value="module" ;;
+        --bind)           expect_value="bind" ;;
+        --exec)           expect_value="exec" ;;
+        --shell)          force_shell=1 ;;
+        --user)           expect_value="user" ;;
+        --root)           keep_root=1 ;;
+        --no-gui)         no_gui=1 ;;
+        --no-home)        no_home=1 ;;
+        --persist)        expect_value="persist" ;;
+        --register)       register_mode=1 ;;
+        --unregister)     unregister_mode=1 ;;
+        --all)
+            if [ "${unregister_mode}" -eq 1 ]; then
+                unregister_all=1
+            else
+                fail "$(printf "$(_ 'unknown option: %s')" "$arg")" 2
+            fi
+            ;;
+        -v|--verbose)     verbose=1 ;;
+        --)               after_module=1; forced_args=1 ;;
+        -*)               fail "$(printf "$(_ 'unknown option: %s')" "$arg")" 2 ;;
+        *)
+            if [ "${unregister_mode}" -eq 1 ] && [ -z "${unregister_module}" ]; then
+                unregister_module="$arg"
+            elif [ -z "$modules" ]; then
+                modules="$(append_line "$modules" "$arg")"
+                after_module=1
+            else
+                command_args="$(append_line "$command_args" "$arg")"
+            fi
+            ;;
+    esac
+done
+
+[ -z "$expect_value" ] || fail "$(printf "$(_ 'missing value for option (--%s)')" "$expect_value")" 2
+[ "$register_mode" -eq 0 ] || [ "$unregister_mode" -eq 0 ] || fail "$(_ '--register and --unregister cannot be used together')" 2
+
+if [ "$unregister_mode" -eq 1 ]; then
+    if [ "$(id -u)" -ne 0 ]; then
+        if ! command -v sudo >/dev/null 2>&1; then
+            fail "$(_ 'must run as root (sudo not available)')" 1
+        fi
+        exec sudo --preserve-env=SUDO_USER,WAYLAND_DISPLAY,DISPLAY,XDG_RUNTIME_DIR,XDG_SESSION_TYPE,LANG,LC_ALL,HOME,XDG_DATA_HOME,XDG_CACHE_HOME,XDG_CONFIG_HOME "$0" "$@"
+    fi
+
+    if [ "$unregister_all" -eq 1 ] && [ -n "$unregister_module" ]; then
+        fail "$(_ '--unregister accepts either --all or MODULE.pfs')" 2
+    fi
+    if [ "$unregister_all" -eq 0 ] && [ -z "$unregister_module" ]; then
+        fail "$(_ '--unregister requires --all or MODULE.pfs')" 2
+    fi
+
+    unregister_home="$(pfsrun_current_user_home)"
+    if [ "$unregister_all" -eq 1 ]; then
+        pfsrun_unregister_cleanup_all "${unregister_home}"
+    else
+        pfsrun_unregister_cleanup_module "${unregister_home}" "${unregister_module}"
+    fi
+    exit 0
+fi
+
+# ---- self-elevate via sudo if not root ----
+if [ "$(id -u)" -ne 0 ]; then
+    if ! command -v sudo >/dev/null 2>&1; then
+        fail "$(_ 'must run as root (sudo not available)')" 1
+    fi
+    exec sudo --preserve-env=SUDO_USER,WAYLAND_DISPLAY,DISPLAY,XDG_RUNTIME_DIR,XDG_SESSION_TYPE,LANG,LC_ALL,HOME,XDG_DATA_HOME,XDG_CACHE_HOME,XDG_CONFIG_HOME "$0" "$@"
+fi
+
+[ -n "$modules" ] || fail "$(_ 'module is required (see --help)')" 2
+
+# ---- determine target user ----
+if [ "$keep_root" -eq 1 ]; then
+    target_user="root"
+elif [ -z "$target_user" ]; then
+    target_user="${SUDO_USER:-}"
+    [ -n "$target_user" ] || target_user="root"
+fi
+
+target_uid="$(id -u "$target_user" 2>/dev/null)" \
+    || fail "$(printf "$(_ 'user not found: %s')" "$target_user")" 2
+target_home="$(getent passwd "$target_user" 2>/dev/null | cut -d: -f6)"
+[ -n "$target_home" ] || target_home="/root"
+
+# Detect the host desktop session UID (so --root mode can still reach
+# Wayland/Xorg). When invoked via sudo this is $SUDO_UID; otherwise we fall
+# back to target_uid (matches the regular non-root case).
+gui_uid="${SUDO_UID:-${target_uid}}"
+gui_user="${SUDO_USER:-${target_user}}"
+case "$gui_uid" in
+    ''|*[!0-9]*) gui_uid="$target_uid" ;;
+esac
+
+# ---- compose binds ----
+auto_binds=""
+if [ "$no_gui" -eq 0 ]; then
+    auto_binds="$(append_line "$auto_binds" "/proc")"
+    auto_binds="$(append_line "$auto_binds" "/sys")"
+    auto_binds="$(append_line "$auto_binds" "/dev")"
+    if [ -d "/run/user/${target_uid}" ]; then
+        auto_binds="$(append_line "$auto_binds" "/run/user/${target_uid}")"
+    fi
+    # In --root mode also bind the desktop session of the invoking user so
+    # GUI apps (Wayland socket, pulse, dbus user bus) keep working.
+    if [ "$keep_root" -eq 1 ] && [ "$gui_uid" != "$target_uid" ] \
+            && [ -d "/run/user/${gui_uid}" ]; then
+        auto_binds="$(append_line "$auto_binds" "/run/user/${gui_uid}")"
+    fi
+    if [ -d "/tmp/.X11-unix" ]; then
+        auto_binds="$(append_line "$auto_binds" "/tmp/.X11-unix")"
+    fi
+    # System DBus socket (helps polkit, NetworkManager, etc.).
+    # NOTE: pkexec apps still need a polkit auth agent registered in the
+    # caller's session, which is hard to satisfy inside a namespace —
+    # such apps may need --root + explicit binds.
+    if [ -d "/run/dbus" ]; then
+        auto_binds="$(append_line "$auto_binds" "/run/dbus")"
+    fi
+fi
+
+# Bind the target user's $HOME so app profile (~/.mozilla, ~/.config, …) persists.
+# Skip with --no-home for ephemeral / sandboxed runs.
+if [ "$no_home" -eq 0 ] && [ "$keep_root" -eq 0 ] \
+        && [ -n "$target_home" ] && [ -d "$target_home" ]; then
+    auto_binds="$(append_line "$auto_binds" "$target_home")"
+fi
+
+all_binds="$(append_line "$auto_binds" "$binds")"
+
+# ---- resolve main binary if not given ----
+strip_suffixes() {
+    # Strip trailing version/flavor markers commonly used in PuppyRus modules.
+    # Examples handled:
+    #   firefox-bin-gtk3-p-130.0.0_64-sf01 -> firefox-bin-gtk3
+    #   netsurf-gtk3-p-3.11_64-sf03        -> netsurf-gtk3
+    #   gparted-2601-sf02                  -> gparted
+    printf '%s' "$1" | sed -E '
+        s/-sf[0-9]+$//
+        s/-[0-9]+([._-][0-9A-Za-z]+)*$//
+        s/_[0-9]+$//
+        s/-p$//
+    '
+}
+
+resolve_exec_from_module() {
+    first_module="$(printf '%s' "$modules" | head -n1)"
+    base="$(basename "$first_module" .pfs)"
+
+    candidates=""
+    add_candidate() {
+        c="$1"
+        [ -n "$c" ] || return 0
+        if ! printf '%s\n' "$candidates" | grep -Fxq "$c"; then
+            candidates="$(append_line "$candidates" "$c")"
+        fi
+    }
+
+    cur="$(strip_suffixes "$base")"
+    [ -n "$cur" ] || cur="$base"
+    add_candidate "$cur"
+    # Progressively trim trailing -segment for fallback names
+    while [ "$cur" != "${cur%-*}" ] && [ -n "${cur%-*}" ]; do
+        cur="${cur%-*}"
+        add_candidate "$cur"
+    done
+
+    # Also try -bin suffixes
+    bin_candidates=""
+    saved_ifs="$IFS"
+    IFS='
+'
+    for c in $candidates; do
+        bin_candidates="$(append_line "$bin_candidates" "${c}-bin")"
+    done
+    IFS="$saved_ifs"
+    while IFS= read -r c; do
+        [ -n "$c" ] && add_candidate "$c"
+    done <<EOF
+$bin_candidates
+EOF
+
+    list="$(unsquashfs -ll "$first_module" 2>/dev/null \
+        | awk '/^-rwx/ { print $NF }')" \
+        || list=""
+    [ -n "$list" ] || return 1
+
+    while IFS= read -r c; do
+        [ -n "$c" ] || continue
+        for path in \
+            "squashfs-root/usr/bin/${c}" \
+            "squashfs-root/opt/${c}/${c}" \
+            "squashfs-root/opt/${c}/${c}-bin"
+        do
+            if printf '%s\n' "$list" | grep -Fxq "$path"; then
+                printf '%s' "${path#squashfs-root}"
+                return 0
+            fi
+        done
+    done <<EOF
+$candidates
+EOF
+
+    # Fallback: first /usr/bin/<candidate>* match
+    while IFS= read -r c; do
+        [ -n "$c" ] || continue
+        match="$(printf '%s\n' "$list" \
+            | grep -E "^squashfs-root/usr/bin/${c}([-_.]|$)" \
+            | head -n1)"
+        if [ -n "$match" ]; then
+            printf '%s' "${match#squashfs-root}"
+            return 0
+        fi
+    done <<EOF
+$candidates
+EOF
+
+    return 1
+}
+
+cmd_path=""
+shell_fallback=0
+
+# Decide whether command_args is "literal command" or "flags for auto-detected binary".
+# Convention:
+#   - explicit `--` after the module => everything after is args to auto-detected binary
+#   - first arg starts with `-`      => flags for auto-detected binary (auto-detect)
+#   - first arg looks like a path/word => treat as command (no auto-detect)
+need_autodetect=0
+if [ "$forced_args" -eq 1 ]; then
+    need_autodetect=1
+elif [ -n "$command_args" ]; then
+    first_ca="$(printf '%s\n' "$command_args" | head -n1)"
+    case "$first_ca" in
+        -*) need_autodetect=1 ;;
+    esac
+else
+    need_autodetect=1
+fi
+
+if [ "$force_shell" -eq 1 ]; then
+    shell_fallback=1
+elif [ -n "$exec_override" ]; then
+    cmd_path="$exec_override"
+elif [ "$need_autodetect" -eq 1 ]; then
+    if cmd_path="$(resolve_exec_from_module)"; then
+        :
+    else
+        printf 'pfsrun: %s\n' "$(_ 'could not auto-detect main binary in module; dropping into interactive shell.')" >&2
+        printf 'pfsrun: %s\n' "$(_ 'try `ls /usr/bin /opt` and run the binary by hand. Exit shell to teardown the namespace.')" >&2
+        cmd_path=""
+        shell_fallback=1
+    fi
+fi
+
+# Pick a shell for the fallback. Order:
+#   1. Target user's login shell from /etc/passwd
+#   2. /bin/bash
+#   3. /bin/sh
+fallback_shell=""
+if [ "$shell_fallback" -eq 1 ]; then
+    fallback_shell="$(getent passwd "$target_user" 2>/dev/null | cut -d: -f7)"
+    case "$fallback_shell" in
+        ""|/sbin/nologin|/usr/sbin/nologin|/bin/false|/usr/bin/false)
+            fallback_shell=""
+            ;;
+    esac
+    [ -n "$fallback_shell" ] || fallback_shell="/bin/bash"
+fi
+
+# ---- compose env to inject inside namespace ----
+env_pairs=""
+add_env() { env_pairs="$(append_line "$env_pairs" "$1=$2")"; }
+
+if [ "$no_gui" -eq 0 ]; then
+    # Point XDG_RUNTIME_DIR at the host desktop session so the Wayland
+    # socket etc. is reachable even in --root mode.
+    add_env XDG_RUNTIME_DIR "/run/user/${gui_uid}"
+    if [ -n "${WAYLAND_DISPLAY:-}" ]; then
+        add_env WAYLAND_DISPLAY "$WAYLAND_DISPLAY"
+    elif [ -e "/run/user/${gui_uid}/wayland-0" ]; then
+        add_env WAYLAND_DISPLAY "wayland-0"
+    fi
+    [ -n "${DISPLAY:-}" ] && add_env DISPLAY "$DISPLAY"
+    [ -n "${XAUTHORITY:-}" ] && add_env XAUTHORITY "$XAUTHORITY"
+    [ -n "${XDG_SESSION_TYPE:-}" ] && add_env XDG_SESSION_TYPE "$XDG_SESSION_TYPE"
+
+    if [ -n "${WAYLAND_DISPLAY:-}" ] || [ -e "/run/user/${gui_uid}/wayland-0" ]; then
+        add_env MOZ_ENABLE_WAYLAND "1"
+        add_env GDK_BACKEND "wayland"
+        add_env QT_QPA_PLATFORM "wayland"
+    fi
+fi
+
+add_env HOME "$target_home"
+add_env USER "$target_user"
+add_env LOGNAME "$target_user"
+[ -n "${LANG:-}" ] && add_env LANG "$LANG"
+[ -n "${LC_ALL:-}" ] && add_env LC_ALL "$LC_ALL"
+add_env PATH "/usr/bin:/usr/sbin:/bin:/sbin"
+
+if [ "$register_mode" -eq 1 ]; then
+    register_session_id="$(pfsrun_session_id_generate)"
+    register_cache_root="$(pfsrun_xdg_exports_cache_root_from_home "${target_home}")"
+    register_xdg_data_home="$(pfsrun_xdg_data_home_from_home "${target_home}")"
+    register_xdg_cache_home="$(pfsrun_xdg_cache_home_from_home "${target_home}")"
+    register_module="$(printf '%s' "$modules" | head -n1)"
+
+    add_env PFSRUN_EXPORT_DESKTOP "1"
+    add_env PFSRUN_EXPORT_SESSION_ID "${register_session_id}"
+    add_env PFSRUN_EXPORT_TARGET_USER "${target_user}"
+    add_env PFSRUN_EXPORT_TARGET_HOME "${target_home}"
+    add_env PFSRUN_EXPORT_XDG_DATA_HOME "${register_xdg_data_home}"
+    add_env PFSRUN_EXPORT_XDG_CACHE_HOME "${register_xdg_cache_home}"
+    add_env PFSRUN_EXPORT_CACHE_ROOT "${register_cache_root}"
+    add_env PFSRUN_EXPORT_MODULE "${register_module}"
+fi
+
+# ---- build pfsexec argv ----
+pfsexec_bin="$(command -v pfsexec 2>/dev/null)" \
+    || fail "$(_ 'pfsexec is not available')" 7
+set -- "${pfsexec_bin}"
+
+while IFS= read -r b; do
+    [ -n "$b" ] || continue
+    set -- "$@" "--bind" "$b"
+done <<EOF
+$all_binds
+EOF
+
+[ -n "$persist_dir" ] && set -- "$@" "--persist" "$persist_dir"
+
+while IFS= read -r m; do
+    [ -n "$m" ] || continue
+    set -- "$@" "-m" "$m"
+done <<EOF
+$modules
+EOF
+
+# Module path delimiter: pfsexec accepts modules via -m only here, no positional.
+# Append privilege drop wrapper.
+if [ "$keep_root" -eq 1 ]; then
+    set -- "$@" "/usr/bin/env"
+else
+    set -- "$@" "/usr/bin/runuser" "-u" "$target_user" "--" "/usr/bin/env"
+fi
+
+# Append env pairs
+while IFS= read -r ev; do
+    [ -n "$ev" ] || continue
+    set -- "$@" "$ev"
+done <<EOF
+$env_pairs
+EOF
+
+# Append final command
+if [ "$shell_fallback" -eq 1 ]; then
+    # Drop into a shell inside the namespace.
+    # If stdin is a TTY → interactive shell with PS1 marker.
+    # Otherwise (pipe/heredoc) → non-interactive shell, just execute stdin.
+    if [ -t 0 ]; then
+        set -- "$@" "PS1=(pfsrun) \\u@\\h:\\w\\$ " "$fallback_shell" "-i"
+    else
+        set -- "$@" "$fallback_shell"
+    fi
+elif [ -n "$cmd_path" ]; then
+    set -- "$@" "$cmd_path"
+fi
+while IFS= read -r ca; do
+    [ -n "$ca" ] || continue
+    set -- "$@" "$ca"
+done <<EOF
+$command_args
+EOF
+
+if [ "$verbose" -eq 1 ]; then
+    {
+        printf 'pfsrun: %s\n' \
+            "$(printf "$(_ 'target_user=%s uid=%s home=%s no_gui=%s keep_root=%s')" "$target_user" "$target_uid" "$target_home" "$no_gui" "$keep_root")"
+        printf 'pfsrun: %s' "$(_ 'exec:')"
+        for a in "$@"; do printf ' %s' "$a"; done
+        printf '\n'
+    } >&2
+fi
+
+if command -v env >/dev/null 2>&1 && env --help 2>&1 | grep -q -- '--default-signal'; then
+    exec env \
+        --default-signal=INT \
+        --default-signal=TERM \
+        --default-signal=HUP \
+        "$@"
+fi
+
+exec "$@"

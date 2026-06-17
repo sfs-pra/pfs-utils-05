@@ -1,0 +1,670 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: pfs-utils 2026.04\n"
+"PO-Revision-Date: 2026-05-08 00:00+0000\n"
+"Last-Translator: pfs-utils maintainers\n"
+"Language-Team: Russian\n"
+"Language: ru\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgid "--command \t- command to execute inside chroot; this parameter must be last on the command line"
+msgstr "--command \t- команда для выполнения внутри chroot; этот параметр должен быть последним в строке"
+
+msgid "Run a program with a different locale: --command LANG=ru_RU.UTF-8 program. Works only with \"-c chroot\"."
+msgstr "Запуск программы с другой локалью: --command LANG=ru_RU.UTF-8 program. Работает только с \"-c chroot\"."
+
+msgid "--script \t- script copied into chroot and executed there"
+msgstr "--script \t- скрипт, который будет скопирован в chroot и запущен там"
+
+msgid "-m | --mask \t- mask for system bundles used to build the aufs root for chroot"
+msgstr "-m | --mask \t- маска системных бандлов для сборки aufs-корня chroot"
+
+msgid "--mlist \t- list of modules and directories used to build aufs; separator is \",\""
+msgstr "--mlist \t- список модулей и каталогов для сборки aufs; разделитель — \",\""
+
+msgid "You can use \"#\" to disable an entry. Example: --mlist 1.${EXT},#2.${EXT},3.${EXT}"
+msgstr "Можно использовать \"#\", чтобы отключить элемент. Пример: --mlist 1.${EXT},#2.${EXT},3.${EXT}"
+
+msgid "--flist \t- list of modules and directories read from a file; \"#\" disables an entry"
+msgstr "--flist \t- список модулей и каталогов из файла; \"#\" отключает элемент"
+
+msgid "Create a list of modules from dir: find /pth/dir -name *.$EXT | sort | awk '{print \"#\"$0}' > flist.lst"
+msgstr "Создать список модулей из каталога dir: find /pth/dir -name *.$EXT | sort | awk '{print \"#\"$0}' > flist.lst"
+
+msgid "-f | --fast \t- build module with faster compression"
+msgstr "-f | --fast \t- собрать модуль с более быстрой компрессией"
+
+msgid "-n | -o | --name \t- name of the output module or directory (directory when no .$EXT suffix is used)"
+msgstr "-n | -o | --name \t- имя выходного модуля или каталога (каталог, если суффикс .$EXT не указан)"
+
+msgid "-c | --contaner \t- container type: \"chroot\" or \"nspawn\" (systemd-nspawn required on both host and guest)"
+msgstr "-c | --contaner \t- тип контейнера: \"chroot\" или \"nspawn\" (systemd-nspawn нужен и на хосте, и в гостевой системе)"
+
+msgid "--boot - only for -c nspawn. See systemd-nspawn -b"
+msgstr "--boot - только для -c nspawn. См. systemd-nspawn -b"
+
+msgid "--notrim \t- keep obviously unnecessary files in the result (cache etc.)"
+msgstr "--notrim \t- сохранить в результате заведомо лишние файлы (кэш и т.п.)"
+
+msgid "--wh \t- keep AUFS whiteout files"
+msgstr "--wh \t- сохранить AUFS whiteout-файлы"
+
+msgid "--bind \t- list of directories to mount into chroot in the format /SOURCE/DIR1::/TARGET/DIR1,/SOURCE/DIR2::/TARGET/DIR2"
+msgstr "--bind \t- список каталогов для монтирования в chroot в формате /SOURCE/DIR1::/TARGET/DIR1,/SOURCE/DIR2::/TARGET/DIR2"
+
+msgid "--overlay \t- use OverlayFS for the chroot root layer (default)"
+msgstr "--overlay \t- использовать OverlayFS для корневого слоя chroot (по умолчанию)"
+
+msgid "--aufs \t- force AUFS for the chroot root layer"
+msgstr "--aufs \t- принудительно использовать AUFS для корневого слоя chroot"
+
+msgid "--nomod \t- do not create a module from the resulting changes"
+msgstr "--nomod \t- не создавать модуль из полученных изменений"
+
+msgid "Output: NAME without the .pfs suffix creates a directory (default)."
+msgstr "Вывод: NAME без суффикса .pfs создаёт каталог (по умолчанию)."
+
+msgid "        NAME with the .pfs suffix builds a single .pfs module."
+msgstr "        NAME с суффиксом .pfs собирает один .pfs-модуль."
+
+msgid "-X \t- allow access to the current GUI session (X11 and Wayland sockets). Useful for GUI applications inside chroot. Recommended with \"-c nspawn\"."
+msgstr "-X \t- разрешить доступ к текущей GUI-сессии (сокеты X11 и Wayland). Полезно для GUI-приложений внутри chroot. Рекомендуется с \"-c nspawn\"."
+
+msgid "The host kernel architecture must match the guest architecture (i686 or x86_64). The host distribution itself may differ."
+msgstr "Архитектура ядра хоста должна совпадать с архитектурой гостевой системы (i686 или x86_64). Сам дистрибутив хоста может отличаться."
+
+msgid "EXAMPLES"
+msgstr "ПРИМЕРЫ"
+
+msgid "Build the mc module into the ModuleDIR directory:"
+msgstr "Собрать модуль mc в каталог ModuleDIR:"
+
+msgid "Run pcmanfm from a guest system built from modules 1 and 3 (1 is in the upper AUFS layer and overrides 2):"
+msgstr "Запустить pcmanfm из гостевой системы, собранной из модулей 1 и 3 (1 находится в верхнем слое AUFS и перекрывает 2):"
+
+msgid "Module %s was made by another program"
+msgstr "Модуль %s был создан другой программой"
+
+msgid "rebuilding %s in %s"
+msgstr "пересборка %s в %s"
+
+msgid "Using container: %s (layering: %s)"
+msgstr "Используется контейнер: %s (тип слоёв: %s)"
+
+msgid "Please enter name for output directory (add .pfs suffix to build a module file): "
+msgstr "Введите имя выходного каталога (добавьте суффикс .pfs, чтобы собрать модуль-файл): "
+
+msgid "Output file \"%s\" already exists"
+msgstr "Выходной файл \"%s\" уже существует"
+
+msgid "Output directory \"%s\" already exists"
+msgstr "Выходной каталог \"%s\" уже существует"
+
+msgid "error mounting root"
+msgstr "ошибка монтирования корня"
+
+msgid "layer container number: %s"
+msgstr "номер контейнера слоёв: %s"
+
+msgid "Wrong container type, must be \"chroot\" or \"nspawn\""
+msgstr "Неверный тип контейнера, должен быть \"chroot\" или \"nspawn\""
+
+msgid "Usage: pfsrun [OPTIONS] MODULE.pfs [COMMAND [ARGS...]]"
+msgstr "Использование: pfsrun [ОПЦИИ] МОДУЛЬ.pfs [КОМАНДА [АРГУМЕНТЫ...]]"
+
+msgid "       pfsrun [OPTIONS] -m MOD1.pfs [-m MOD2.pfs ...] [-- COMMAND [ARGS...]]"
+msgstr "       pfsrun [ОПЦИИ] -m МОД1.pfs [-m МОД2.pfs ...] [-- КОМАНДА [АРГУМЕНТЫ...]]"
+
+msgid "Run an application from a PFS module in an overlay namespace with desktop-session defaults."
+msgstr "Запускает приложение из PFS-модуля в overlay namespace с настройками текущей desktop-сессии."
+
+msgid "  -h, --help          Show this help."
+msgstr "  -h, --help          Показать эту справку."
+
+msgid "  -m MODULE           Add module to overlay (repeatable)."
+msgstr "  -m МОДУЛЬ           Добавить модуль в overlay (можно повторять)."
+
+msgid "  --bind PATH         Extra bind mount inside the namespace (repeatable)."
+msgstr "  --bind ПУТЬ         Дополнительный bind-mount внутри namespace (можно повторять)."
+
+msgid "  --exec PATH         Override main binary path (skip auto-detect)."
+msgstr "  --exec ПУТЬ         Указать путь к основному бинарнику (без автоопределения)."
+
+msgid "  --shell             Drop into an interactive shell inside the namespace."
+msgstr "  --shell             Открыть интерактивный shell внутри namespace."
+
+msgid "  --user USER         Drop privileges to USER (default: $SUDO_USER)."
+msgstr "  --user USER         Сбросить привилегии до USER (по умолчанию: $SUDO_USER)."
+
+msgid "  --root              Run as root inside namespace (no privilege drop)."
+msgstr "  --root              Запустить от root внутри namespace (без сброса привилегий)."
+
+msgid "  --no-gui            Skip GUI binds and Wayland/X11 env propagation."
+msgstr "  --no-gui            Не пробрасывать GUI-bind и окружение Wayland/X11."
+
+msgid "  --no-home           Do NOT bind-mount the target user HOME into the namespace."
+msgstr "  --no-home           Не bind-монтировать HOME целевого пользователя в namespace."
+
+msgid "  --persist DIR       Use DIR/upper and DIR/work for overlay storage."
+msgstr "  --persist DIR       Использовать DIR/upper и DIR/work для overlay-хранилища."
+
+msgid "  --register         Mark launch for user-session desktop/icon export metadata forwarding."
+msgstr "  --register         Пометить запуск для проброса metadata desktop/icon в пользовательскую сессию."
+
+msgid "  --unregister       Cleanup exported desktop/icon artifacts from manifests (user-only)."
+msgstr "  --unregister       Очистить экспортированные desktop/icon-артефакты из манифестов (только пользовательские)."
+
+msgid "  --all              With --unregister: cleanup all manifests under export cache."
+msgstr "  --all              С --unregister: очистить все манифесты в кэше экспорта."
+
+msgid "  -v, --verbose       Print the resolved pfsexec command on stderr."
+msgstr "  -v, --verbose       Печатать разрешённую команду pfsexec в stderr."
+
+msgid "  --                  End of options; treat the rest as COMMAND ARGS."
+msgstr "  --                  Конец опций; считать остаток АРГУМЕНТАМИ КОМАНДЫ."
+
+msgid "Auto-discovery: when COMMAND is omitted, pfsrun derives the main binary from the first module name."
+msgstr "Автоопределение: если КОМАНДА не указана, pfsrun выводит основной бинарник из имени первого модуля."
+
+msgid "If auto-detect fails, pfsrun opens an interactive shell with a marked PS1 prompt."
+msgstr "Если автоопределение не удалось, pfsrun открывает интерактивный shell с помеченным PS1-приглашением."
+
+msgid "Examples:"
+msgstr "Примеры:"
+
+msgid "must run as root (sudo not available)"
+msgstr "нужно запускать от root (sudo недоступен)"
+
+msgid "unknown option: %s"
+msgstr "неизвестная опция: %s"
+
+msgid "missing value for option (--%s)"
+msgstr "не указано значение для опции (--%s)"
+
+msgid "--register and --unregister cannot be used together"
+msgstr "--register и --unregister нельзя использовать вместе"
+
+msgid "--unregister accepts either --all or MODULE.pfs"
+msgstr "--unregister принимает либо --all, либо MODULE.pfs"
+
+msgid "--unregister requires --all or MODULE.pfs"
+msgstr "--unregister требует --all или MODULE.pfs"
+
+msgid "module is required (see --help)"
+msgstr "нужно указать модуль (см. --help)"
+
+msgid "user not found: %s"
+msgstr "пользователь не найден: %s"
+
+msgid "could not auto-detect main binary in module; dropping into interactive shell."
+msgstr "не удалось автоопределить основной бинарник в модуле; открывается интерактивный shell."
+
+msgid "try `ls /usr/bin /opt` and run the binary by hand. Exit shell to teardown the namespace."
+msgstr "попробуйте `ls /usr/bin /opt` и запустите бинарник вручную. Выйдите из shell, чтобы разобрать namespace."
+
+msgid "pfsexec is not available"
+msgstr "pfsexec недоступен"
+
+msgid "target_user=%s uid=%s home=%s no_gui=%s keep_root=%s"
+msgstr "target_user=%s uid=%s home=%s no_gui=%s keep_root=%s"
+
+msgid "exec:"
+msgstr "exec:"
+
+msgid "Usage: pfsexec [OPTIONS] [MODULE.pfs] [COMMAND [ARGS...]]"
+msgstr "Использование: pfsexec [ОПЦИИ] [МОДУЛЬ.pfs] [КОМАНДА [АРГУМЕНТЫ...]]"
+
+msgid "  -h, --help       Show this help and exit."
+msgstr "  -h, --help       Показать эту справку и выйти."
+
+msgid "  -m MODULE        Mount MODULE inside the namespace (repeatable)."
+msgstr "  -m МОДУЛЬ        Смонтировать МОДУЛЬ внутри namespace (можно повторять)."
+
+msgid "      --rw         Use tmpfs upper/work in /run/pfs-utils/exec (default)."
+msgstr "      --rw         Использовать tmpfs upper/work в /run/pfs-utils/exec (по умолчанию)."
+
+msgid "      --persist DIR Use DIR/upper and DIR/work for overlay upper/work."
+msgstr "      --persist DIR Использовать DIR/upper и DIR/work для overlay upper/work."
+
+msgid "      --bind PATH  Bind-mount host PATH inside the namespace (repeatable)."
+msgstr "      --bind ПУТЬ  Bind-монтировать ПУТЬ хоста внутри namespace (можно повторять)."
+
+msgid "module is required"
+msgstr "нужно указать модуль"
+
+msgid "missing value for -m"
+msgstr "не указано значение для -m"
+
+msgid "missing value for --%s"
+msgstr "не указано значение для --%s"
+
+msgid "whitespace in module paths is not supported"
+msgstr "пробелы в путях модулей не поддерживаются"
+
+msgid "module not found: %s"
+msgstr "модуль не найден: %s"
+
+msgid "unsupported filesystem: %s"
+msgstr "неподдерживаемая файловая система: %s"
+
+msgid "overlayfs is not supported by this kernel"
+msgstr "overlayfs не поддерживается этим ядром"
+
+msgid "unshare is not available"
+msgstr "unshare недоступен"
+
+msgid "unshare does not support --propagation"
+msgstr "unshare не поддерживает --propagation"
+
+msgid "must run as root"
+msgstr "нужно запускать от root"
+
+msgid "unable to create session directories"
+msgstr "не удалось создать каталоги сессии"
+
+msgid "unable to create overlay upper/work directories"
+msgstr "не удалось создать overlay-каталоги upper/work"
+
+msgid "failed to prepare module mount: %s"
+msgstr "не удалось подготовить точку монтирования модуля: %s"
+
+msgid "failed to mount module: %s"
+msgstr "не удалось смонтировать модуль: %s"
+
+msgid "failed to mount overlay"
+msgstr "не удалось смонтировать overlay"
+
+msgid "bind path must be absolute: %s"
+msgstr "путь bind должен быть абсолютным: %s"
+
+msgid "skipping --bind %s (path does not exist)"
+msgstr "пропуск --bind %s (путь не существует)"
+
+msgid "failed to prepare bind target: %s"
+msgstr "не удалось подготовить цель bind: %s"
+
+msgid "failed to bind mount: %s"
+msgstr "не удалось выполнить bind mount: %s"
+
+msgid "failed to export desktop entries"
+msgstr "не удалось экспортировать desktop-записи"
+
+msgid "failed to enter new root"
+msgstr "не удалось перейти в новый root"
+
+msgid "failed to prepare pivot_root"
+msgstr "не удалось подготовить pivot_root"
+
+msgid "pivot_root failed"
+msgstr "pivot_root завершился ошибкой"
+
+msgid "failed to enter pivoted root"
+msgstr "не удалось перейти в root после pivot_root"
+
+msgid "failed to mark ready state"
+msgstr "не удалось отметить состояние готовности"
+
+msgid "unshare or pivot_root failed"
+msgstr "unshare или pivot_root завершился ошибкой"
+
+msgid "Options:"
+msgstr "Параметры:"
+
+msgid "\t-o / --out-file - output file name (if specified without the .$EXT suffix, the result will be a directory)."
+msgstr "\t-o / --out-file - имя выходного файла (если указать без суффикса .$EXT, результатом будет каталог)."
+
+msgid "\t-w - do not include AUFS whiteouts."
+msgstr "\t-w - не включать AUFS whiteout-файлы."
+
+msgid "\t-l / --local - build in place without using aufs."
+msgstr "\t-l / --local - собирать на месте без использования aufs."
+
+msgid "\t-f / --fast - faster compression (larger .$EXT, but quicker to build)."
+msgstr "\t-f / --fast - быстрая компрессия (размер .$EXT больше, сборка быстрее)."
+
+msgid "\t--mksqfs / parameters for mksquashfs, compression, block size, etc. (must be the last parameter)."
+msgstr "\t--mksqfs / параметры для mksquashfs: компрессия, размер блока и т.п. (должен быть последним параметром)."
+
+msgid "Aliases:"
+msgstr "Алиасы:"
+
+msgid " -d | -D - directories only"
+msgstr " -d | -D - только каталоги"
+
+msgid " -m | -M - modules only"
+msgstr " -m | -M - только модули"
+
+msgid "mkpfs: whitespace in names is not supported: %s"
+msgstr "mkpfs: пробелы в именах не поддерживаются: %s"
+
+msgid "extractor for ${EXT} modules"
+msgstr "распаковщик модулей ${EXT}"
+
+msgid "Usage:"
+msgstr "Использование:"
+
+msgid "if the module is composite, extract submodules into ./file"
+msgstr "если модуль составной, извлечь подмодули в ./file"
+
+msgid "if the module is simple, unpack it"
+msgstr "если модуль простой, распаковать его"
+
+msgid "extract only pack1 and pack2 from file.${EXT}"
+msgstr "извлечь из file.${EXT} только pack1 и pack2"
+
+msgid "unpack into the system, i.e. install"
+msgstr "распаковать в систему, т.е. установить"
+
+msgid "create dir and unpack into it"
+msgstr "создать каталог и распаковать в него"
+
+msgid "extract into directories instead of modules"
+msgstr "извлечь в каталоги вместо модулей"
+
+msgid "do not show progress output"
+msgstr "не показывать вывод прогресса"
+
+msgid "faster compression (larger .${EXT}, but quicker to build)."
+msgstr "быстрая компрессия (размер .${EXT} больше, сборка быстрее)."
+
+msgid "parameters for mksquashfs; must be the last parameter."
+msgstr "параметры для mksquashfs; должны быть последним параметром."
+
+msgid " -u,   --upper     mount filesystem to upper layer (AUFS)."
+msgstr " -u,   --upper     монтировать файловую систему в верхний слой (AUFS)."
+
+msgid " -l,   --lower     mount filesystem to lower layer (AUFS)."
+msgstr " -l,   --lower     монтировать файловую систему в нижний слой (AUFS)."
+
+msgid " -n,   --no-update do not update caches"
+msgstr " -n,   --no-update не обновлять кэши"
+
+msgid " --ro, --read-only mount read-only"
+msgstr " --ro, --read-only монтировать только для чтения"
+
+msgid " -r,   --toram     copy module to RAM disk (tmpfs) before loading"
+msgstr " -r,   --toram     копировать модуль в RAM-диск (tmpfs) перед подключением"
+
+msgid "%s: whitespace in module names is not supported: %s"
+msgstr "%s: пробелы в именах модулей не поддерживаются: %s"
+
+msgid "%s: whitespace in module paths is not supported."
+msgstr "%s: пробелы в путях модулей не поддерживаются."
+
+msgid "Not enough free RAM space"
+msgstr "Недостаточно свободной RAM"
+
+msgid "File already in RAM and mounted"
+msgstr "Файл уже находится в RAM и подключён"
+
+msgid "Object \"%s\" not found!"
+msgstr "Объект \"%s\" не найден!"
+
+msgid "Unknown file system -- \"%s\""
+msgstr "Неизвестная файловая система -- \"%s\""
+
+msgid "Kernel does not support PFS!"
+msgstr "Ядро не поддерживает PFS!"
+
+msgid "\"%s\" -- unsupported filesystem"
+msgstr "\"%s\" -- неподдерживаемая файловая система"
+
+msgid "Object \"%s\" is mounted!"
+msgstr "Объект \"%s\" уже подключён!"
+
+msgid "Error! Free loop devices were not found!"
+msgstr "Ошибка! Свободные loop-устройства не найдены!"
+
+msgid "Layering error!"
+msgstr "Ошибка слоя!"
+
+msgid "Unable to mount \"%s\" in \"%s\"."
+msgstr "Не удалось смонтировать \"%s\" в \"%s\"."
+
+msgid "Mount error!"
+msgstr "Ошибка монтирования!"
+
+msgid "(squashfs module, dir, iso, img, etc.)"
+msgstr "(squashfs-модуль, каталог, iso, img и т.п.)"
+
+msgid "-n  --no-update  - do not update icon caches, fonts, etc."
+msgstr "-n  --no-update  - не обновлять кэши иконок, шрифтов и т.п."
+
+msgid "-s  --saveram    - do not remove module from RAM after unmounting"
+msgstr "-s  --saveram    - не удалять модуль из RAM после отключения"
+
+msgid "-v               - verbose output"
+msgstr "-v               - подробный вывод"
+
+msgid "-h  --help       - this help"
+msgstr "-h  --help       - эта справка"
+
+msgid "Unmount \"%s\" failed!"
+msgstr "Не удалось отключить \"%s\"!"
+
+msgid "Object \"%s\" not mounted."
+msgstr "Объект \"%s\" не подключён."
+
+msgid "Files opened from %s:"
+msgstr "Файлы открыты из %s:"
+
+msgid " - changed"
+msgstr " - изменён"
+
+msgid "EXPERIMENTAL — symlinks are not transparent (O_NOFOLLOW, st_dev)."
+msgstr "ЭКСПЕРИМЕНТАЛЬНО — symlink не полностью прозрачны (O_NOFOLLOW, st_dev)."
+
+msgid "Persistence in changes= mode is DANGEROUS. Deactivate before reboot."
+msgstr "Постоянство в режиме changes= ОПАСНО. Деактивируйте перед перезагрузкой."
+
+msgid "Works on any rootfs (aufs/overlay/ext4); on aufs-root use pfsload instead for kernel-level transparency."
+msgstr "Работает на любом rootfs (aufs/overlay/ext4); на aufs-root лучше использовать pfsload для прозрачности на уровне ядра."
+
+msgid "%s: invalid option -- %s"
+msgstr "%s: неверный параметр -- %s"
+
+msgid "%s: too many arguments"
+msgstr "%s: слишком много аргументов"
+
+msgid "%s: --persist requires DIR"
+msgstr "%s: --persist требует DIR"
+
+msgid "%s: --list does not accept MODULE"
+msgstr "%s: --list не принимает MODULE"
+
+msgid "pfsactivate: module not found: %s"
+msgstr "pfsactivate: модуль не найден: %s"
+
+msgid "pfsactivate: unsupported module filesystem: %s"
+msgstr "pfsactivate: неподдерживаемая файловая система модуля: %s"
+
+msgid "pfsactivate: %s already activated"
+msgstr "pfsactivate: %s уже активирован"
+
+msgid "pfsactivate: unable to create state dir: %s"
+msgstr "pfsactivate: не удалось создать каталог состояния: %s"
+
+msgid "pfsactivate: unable to create state file: %s"
+msgstr "pfsactivate: не удалось создать файл состояния: %s"
+
+msgid "pfsactivate: unable to mount module: %s"
+msgstr "pfsactivate: не удалось смонтировать модуль: %s"
+
+msgid "pfsactivate: unable to enumerate module files: %s"
+msgstr "pfsactivate: не удалось получить список файлов модуля: %s"
+
+msgid "pfsactivate: refusing to overlay protected path: %s"
+msgstr "pfsactivate: отказ перекрывать защищённый путь: %s"
+
+msgid "pfsactivate: unable to create parent directory: %s"
+msgstr "pfsactivate: не удалось создать родительский каталог: %s"
+
+msgid "pfsactivate: refusing to replace directory target: %s"
+msgstr "pfsactivate: отказ заменять целевой каталог: %s"
+
+msgid "pfsactivate: backup already exists: %s"
+msgstr "pfsactivate: резервная копия уже существует: %s"
+
+msgid "pfsactivate: unable to preserve original: %s"
+msgstr "pfsactivate: не удалось сохранить оригинал: %s"
+
+msgid "pfsactivate: unable to link target: %s"
+msgstr "pfsactivate: не удалось создать ссылку на цель: %s"
+
+msgid "pfsactivate: unable to update state: %s"
+msgstr "pfsactivate: не удалось обновить состояние: %s"
+
+msgid "pfsactivate: activated %s files from %s"
+msgstr "pfsactivate: активировано файлов: %s из %s"
+
+msgid "pfsdeactivate: not activated: %s"
+msgstr "pfsdeactivate: не активирован: %s"
+
+msgid "pfsdeactivate: unable to restore files for %s"
+msgstr "pfsdeactivate: не удалось восстановить файлы для %s"
+
+msgid "%s: warning: failed to unmount %s"
+msgstr "%s: предупреждение: не удалось отмонтировать %s"
+
+msgid "pfsdeactivate: deactivated %s with cleanup warnings"
+msgstr "pfsdeactivate: %s деактивирован с предупреждениями очистки"
+
+msgid "pfsdeactivate: deactivated %s"
+msgstr "pfsdeactivate: %s деактивирован"
+
+msgid "keep development files (useful mainly for compilation)"
+msgstr "сохранить файлы разработки (в основном полезно для компиляции)"
+
+msgid "locales"
+msgstr "локали"
+
+msgid "docs, gtk-doc, info, licenses, man pages, etc."
+msgstr "документация, gtk-doc, info, лицензии, man-страницы и т.п."
+
+msgid "size optimization complete"
+msgstr "оптимизация размера завершена"
+
+msgid "Original size:"
+msgstr "Исходный размер:"
+
+msgid "Optimized size:"
+msgstr "Оптимизированный размер:"
+
+msgid "Choose a working directory that is not written into /memory/changes"
+msgstr "Выберите рабочий каталог, изменения в котором не пишутся в /memory/changes"
+
+msgid "For a clean run this can be /tmp or any mounted storage device"
+msgstr "Для чистого запуска это может быть /tmp или любой смонтированный носитель"
+
+msgid "Creating checkpoint, please wait."
+msgstr "Создаётся контрольная точка, подождите."
+
+msgid "Lists are ready. Copying files..."
+msgstr "Списки готовы. Копирование файлов..."
+
+msgid "Processing the \"new\" directory."
+msgstr "Обработка каталога \"new\"."
+
+msgid "Processing the \"changed\" directory."
+msgstr "Обработка каталога \"changed\"."
+
+msgid "utility for analyzing system changes over a time interval."
+msgstr "утилита для анализа изменений системы за промежуток времени."
+
+msgid "Mode 1. Interactive."
+msgstr "Режим 1. Интерактивный."
+
+msgid "Run the script in a terminal as root"
+msgstr "Запустите скрипт в терминале от root"
+
+msgid "Wait until the checkpoint creation message appears"
+msgstr "Дождитесь сообщения о создании контрольной точки"
+
+msgid "Without closing the terminal, make the required changes to the system"
+msgstr "Не закрывая терминал, внесите нужные изменения в систему"
+
+msgid "Return to the terminal and continue by pressing ENTER"
+msgstr "Вернитесь в терминал и продолжите, нажав ENTER"
+
+msgid "Wait for the completion message."
+msgstr "Дождитесь сообщения о завершении."
+
+msgid "Mode 2. For use in scripts"
+msgstr "Режим 2. Для использования в скриптах"
+
+msgid "make changes"
+msgstr "внесите изменения"
+
+msgid "The utility creates a directory named"
+msgstr "Утилита создаёт каталог с именем"
+
+msgid "in the current directory. It contains subdirectories with new and changed files, plus file lists."
+msgstr "в текущем каталоге. В нём находятся подкаталоги с новыми и изменёнными файлами, а также списки файлов."
+
+msgid "ctlpoint directory - copy of changes before modifications, regular files only"
+msgstr "каталог ctlpoint - копия changes до изменений, только обычные файлы"
+
+msgid "new directory      - only new regular files"
+msgstr "каталог new      - только новые обычные файлы"
+
+msgid "changed directory  - only changed regular files"
+msgstr "каталог changed  - только изменённые обычные файлы"
+
+msgid "ctlpoint.list      - list of regular files in changes before modifications"
+msgstr "ctlpoint.list    - список обычных файлов в changes до изменений"
+
+msgid "ctlpoint.noreg     - list of non-regular files in changes before modifications"
+msgstr "ctlpoint.noreg   - список не обычных файлов в changes до изменений"
+
+msgid "new.list           - list of new regular files"
+msgstr "new.list         - список новых обычных файлов"
+
+msgid "new.noreg          - list of new non-regular files"
+msgstr "new.noreg        - список новых не обычных файлов"
+
+msgid "changed.list       - list of changed files"
+msgstr "changed.list     - список изменённых файлов"
+
+msgid "filtered.list      - list of files filtered out from new"
+msgstr "filtered.list    - список файлов, отфильтрованных из new"
+
+msgid "Warning: the utility will not work inside a change directory that itself writes into /changes"
+msgstr "Внимание: утилита не будет работать внутри каталога изменений, который сам пишет в /changes"
+
+msgid "parameters:"
+msgstr "параметры:"
+
+msgid "do not compare checksums; rely only on modification time."
+msgstr "не сравнивать контрольные суммы; ориентироваться только на время изменения."
+
+msgid "disable the built-in filter"
+msgstr "отключить встроенный фильтр"
+
+msgid "create a checkpoint and exit (--nomd5 and --nofilter do not work with --start)"
+msgstr "создать контрольную точку и выйти (--nomd5 и --nofilter не работают с --start)"
+
+msgid "calculate changes from the checkpoint created by"
+msgstr "рассчитать изменения от контрольной точки, созданной командой"
+
+msgid "Checkpoint creation is complete."
+msgstr "Создание контрольной точки завершено."
+
+msgid "Do not close this terminal or interrupt"
+msgstr "Не закрывайте этот терминал и не прерывайте"
+
+msgid "before making the required system changes."
+msgstr "до внесения нужных изменений в систему."
+
+msgid "After you finish, type any character in this terminal and press ENTER"
+msgstr "После завершения введите в этом терминале любой символ и нажмите ENTER"
+
+msgid "To abort, type \"exit\""
+msgstr "Чтобы прервать, введите \"exit\""
+
+msgid "The script has finished."
+msgstr "Скрипт завершил работу."
+
+msgid "The categorized changes and file lists are available in ./$dir"
+msgstr "Разобранные по категориям изменения и списки файлов доступны в ./$dir"

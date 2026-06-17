@@ -1,0 +1,210 @@
+#!/bin/bash
+#Util to find new and changed files
+#VERSION 4.2
+
+# Ensure pfs-utils binaries are resolvable via which(1) when invoked from a
+# restricted PATH (e.g. systemd, GUI, sudo without --preserve-env).
+PATH="/usr/bin:/usr/sbin:${PATH}"
+export PATH
+if [ -f $(dirname $0)/pfs ] ;  then
+    . $(dirname $0)/pfs
+else 
+    PATH="/usr/bin:/usr/sbin:${PATH}"
+    export PATH
+    . "$(which pfs)" || exit 13
+fi    
+
+allow_only_root
+
+PWD=$(pwd)
+start=no
+finish=no
+filter="/var/log /var/spool /run /root /boot /proc /memory"
+md5=enable
+changes=$(aufs-n --raw '$bundle' |head -n1)
+
+
+dir=$(date +$(basename $0)_%H%M%S)
+mkdir -p ./$dir/ctlpoint # копия changes до изменений, только "простые" (regular) файлы  
+if [ -d $changes/$(pwd)/$dir/ctlpoint ] ; then
+  echo "###########################################################################################################"
+  echo "$(_ 'Choose a working directory that is not written into /memory/changes')"
+  echo "$(_ 'For a clean run this can be /tmp or any mounted storage device')"
+  echo "###########################################################################################################"
+  rm -rf ./$dir/ctlpoint
+  exit 3
+fi
+mkdir -p ./$dir/new 	# только новые "простые" файлы
+mkdir -p ./$dir/changed # только измененные "простые" файлы
+> ./$dir/ctlpoint.list 	# список "простых" файлов в changes до изменений
+> ./$dir/ctlpoint.noreg # список не regular файлов в changes до изменений
+> ./$dir/new.list 	# список новых "простых" файлов
+> ./$dir/new.noreg 	# список новых не regular файлов
+> ./$dir/changed.list 	# список измененных файлов
+> ./$dir/filtered.list 	# список отфильтрованных из new файлов
+
+
+
+ctl_point () {
+	[ $start != "yes" ] && echo "		$(_ 'Creating checkpoint, please wait.')"
+	for file in $(find $changes/) ; do 
+		if [ -f $file -o -d $file -o -L $file ]; then 
+		echo $file >> ./$dir/ctlpoint.list
+		else
+		echo $file >> ./$dir/ctlpoint.noreg
+		fi
+	done
+	[ $start != "yes" ] && echo "		$(_ 'Lists are ready. Copying files...')"
+	for file in $(cat  ./$dir/ctlpoint.list) ; do
+		mkdir -p ./$dir/ctlpoint/$(dirname $file |sed "s:$changes::")
+		cp -fr $file ./$dir/ctlpoint/$(dirname $file |sed "s:$changes::")/
+	done
+	
+}
+
+get_new () {
+	[ $finish != "yes" ] && echo "		$(_ 'Processing the "new" directory.')"
+	for file in $(find $changes/) ; do 
+		if [ -f $file -o -d $file -o -L $file ]; then 
+			if ! cat ./$dir/ctlpoint.list | grep -q $(echo $file |sed "s:^${changes}/:/:") ; then
+				test="ok"
+				for int in $filter ;do
+				if echo $file |sed "s:^${changes}/:/:" |grep -q ^"$int" ; then
+				  test=file_in_filter
+				  echo $file >> ./$dir/filtered.list
+				  break
+				fi
+				done
+				[ $test = "ok" ] && echo $file >> ./$dir/new.list
+			fi
+		else
+			if ! cat ./$dir/ctlpoint.noreg | grep -q $(echo $file |sed "s:^${changes}/:/:") ; then
+				echo $file >> ./$dir/new.noreg
+			fi
+		fi
+	done
+	[ $finish != "yes" ] && echo "		$(_ 'Lists are ready. Copying files...')"
+	for file in $(cat  ./$dir/new.list) ; do
+		mkdir -p ./$dir/new/$(dirname $file |sed "s:^${changes}::")
+		cp -fr $file ./$dir/new/$(dirname $file |sed "s:^${changes}::")/
+	done
+}
+
+get_changed () {
+	[ $finish != "yes" ] && echo "		$(_ 'Processing the "changed" directory.')"
+	for file in $(find $changes -cnewer ./$dir/ctlpoint.list ) ; do 
+		if [ -f $file ]; then 
+			new_md5=new_md5
+			old_md5=old_md5
+			if cat ./$dir/ctlpoint.list | grep -q $(echo $file |sed "s:^${changes}/::") ; then
+				[ $md5 = "enable" ] && new_md5=$(md5sum $file |awk '{print $1}')
+				[ $md5 = "enable" ] && old_md5=$(md5sum ./$dir/ctlpoint/$(echo $file |sed "s:^${changes}/:/:") |awk '{print $1}')
+				[ "$new_md5" != "$old_md5" ] && echo $file >> ./$dir/changed.list
+			fi
+		fi
+	done
+	[ $finish != "yes" ] && echo "		$(_ 'Lists are ready. Copying files...')"
+	for file in $(cat  ./$dir/changed.list) ; do
+		mkdir -p ./$dir/changed/$(dirname $file |sed "s:^${changes}::")
+		cp -fr $file ./$dir/changed/$(dirname $file |sed "s:^${changes}::")/
+	done
+}
+
+HELP () {
+cat <<EOF
+$(basename $0) - $(_ 'utility for analyzing system changes over a time interval.')
+
+Usage: $0 --nomd5 --nofilter --start --finish
+
+$(_ 'Mode 1. Interactive.')
+1. $(_ 'Run the script in a terminal as root')
+2. $(_ 'Wait until the checkpoint creation message appears')
+3. $(_ 'Without closing the terminal, make the required changes to the system')
+4. $(_ 'Return to the terminal and continue by pressing ENTER')
+5. $(_ 'Wait for the completion message.')
+
+$(_ 'Mode 2. For use in scripts')
+1. $(basename $0) --start
+2. $(_ 'make changes')
+3. $(basename $0) --finish
+
+$(_ 'The utility creates a directory named') $(basename $0)_HourMinSec $(_ 'in the current directory. It contains subdirectories with new and changed files, plus file lists.')
+
+$(_ 'ctlpoint directory - copy of changes before modifications, regular files only')
+$(_ 'new directory      - only new regular files')
+$(_ 'changed directory  - only changed regular files')
+$(_ 'ctlpoint.list      - list of regular files in changes before modifications')
+$(_ 'ctlpoint.noreg     - list of non-regular files in changes before modifications')
+$(_ 'new.list           - list of new regular files')
+$(_ 'new.noreg          - list of new non-regular files')
+$(_ 'changed.list       - list of changed files')
+$(_ 'filtered.list      - list of files filtered out from new')
+
+$(_ 'Warning: the utility will not work inside a change directory that itself writes into /changes')
+
+$(_ 'parameters:')
+--nomd5     $(_ 'do not compare checksums; rely only on modification time.')
+--nofilter  $(_ 'disable the built-in filter') ( $filter )
+--start     $(_ 'create a checkpoint and exit (--nomd5 and --nofilter do not work with --start)')
+--finish    $(_ 'calculate changes from the checkpoint created by') $(basename $0)
+EOF
+exit
+}
+
+for arg in $@ ; do
+case $arg in
+   -h | --help )
+      HELP ;;
+   --nomd5 )
+      md5=disable ;;
+   --nofilter )
+      filter="" ;;
+   --start )
+      start=yes ;;
+   --finish )
+      finish=yes ;;
+esac
+done
+
+echo "" # да, это просто пустая строка :) 
+if [ $finish != "yes" ] ; then
+    ctl_point
+    if [ $start = "yes" ] ; then
+      echo "$(pwd)  $dir" > /tmp/syschanges.path
+      exit
+    fi
+	echo "" # да, это просто пустая строка :)
+	echo "###########################################################################################################"
+	echo "$(_ 'Checkpoint creation is complete.')"
+	echo "$(_ 'Do not close this terminal or interrupt') $(basename $0) $(_ 'before making the required system changes.')"
+	echo "$(_ 'After you finish, type any character in this terminal and press ENTER')"
+	echo "$(_ 'To abort, type "exit"')"
+	echo "###########################################################################################################"
+	echo -n "		"
+	read a
+	if [ ${a}_ = "exit_" ] ; then
+		rm -rf ./$dir 
+		exit 2
+	fi
+fi
+
+if [ $finish = "yes" ] ; then
+  [ -f /tmp/syschanges.path ] || exit 4
+  PWD=$(pwd)
+  syschanges_path=$(cat /tmp/syschanges.path)
+  dir=$(echo $syschanges_path |awk '{print $2}')
+  cd $(echo $syschanges_path |awk '{print $1}')
+  rm -f /tmp/syschanges.path
+fi
+
+get_new
+get_changed
+if [ $finish != "yes" ] ; then
+	echo "" # да, это просто пустая строка :)
+	echo "###########################################################################################################"
+	echo "$(_ 'The script has finished.')"
+	echo "$(_ 'The categorized changes and file lists are available in ./$dir')"
+	echo "###########################################################################################################"
+	echo "" # да, это просто пустая строка :)
+fi
+cd $PWD

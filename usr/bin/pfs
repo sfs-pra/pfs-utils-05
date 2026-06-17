@@ -1,0 +1,1313 @@
+#!/bin/sh
+#library for pfs-utils (https://github.com/pfs-utils)
+#Authors: puppyrus.org : Zay, DdShurick, sfs
+#Author: magos-linux.ru: Betcher
+#License: GPL v3
+#sudo systemctl restart systemd-timesyncd
+#sudo touch /etc/fstab && sudo systemctl daemon-reload
+#240121 sfs https://forum.puppyrus.org/index.php?topic=24119.msg187893#msg187893
+#mount -o remount,add:1:"$NEWLAYER"=ro+wh "$AUFSMNT" || return 5
+
+#help
+HELP(){
+echo "$0 is a helper library for Pfs-utils scripts" ; echo ""
+echo "Usage:" 
+echo "$0 <function> <pars>"
+echo OR
+echo "source $(realpath $0) ; <function> <pars>" ; echo ""
+echo "Example (umount bundles from 1 to 10):"
+echo "		pfs delaufs 1 10"
+echo "Avaliable functions:"
+cat $0 |grep \(\).*{$
+exit 1
+}
+
+for arg in "$@"
+do
+  case "${arg}" in
+    "-h" | "--help") [ "`basename $0`" = "pfs" ] && { HELP ;exit 1 ; } ;;
+  esac
+done
+
+PATH=${PATH}:/sbin
+PFSDIR=/etc/packages                    # legacy location (still used for in-module manifests)
+PFSDIR_STATE=/var/lib/pfs-utils           # v5: system-state install registry (FHS-compliant)
+PFSDIR_INSTALL_LEGACY="${PFSDIR}/install"
+PFSDIR_INSTALL_NEW="${PFSDIR_STATE}/install"
+: "${PFSDIR_MOUNT_NEW:=/var/lib/pfs/mount}"
+: "${PFSDIR_MOUNT_LEGACY:=${PFSDIR}/mount}"
+
+# gettext bootstrap for pfs-utils shell scripts.
+: "${TEXTDOMAIN:=pfs-utils}"
+: "${TEXTDOMAINDIR:=/usr/share/locale}"
+export TEXTDOMAIN TEXTDOMAINDIR
+_() {
+    if command -v gettext >/dev/null 2>&1; then
+        gettext -- "$1"
+    else
+        printf '%s' "$1"
+    fi
+}
+
+# Resolve the install registry directory. Prefer the FHS location when it
+# exists or can be created; fall back silently to the legacy /etc/packages
+# layout so older consumers keep working on upgraded systems.
+pfsdir_install_dir() {
+    if [ -d "${PFSDIR_INSTALL_NEW}" ]; then
+        echo "${PFSDIR_INSTALL_NEW}"
+        return 0
+    fi
+    if mkdir -p "${PFSDIR_INSTALL_NEW}" 2>/dev/null ; then
+        echo "${PFSDIR_INSTALL_NEW}"
+        return 0
+    fi
+    echo "${PFSDIR_INSTALL_LEGACY}"
+}
+
+# Find a module's registered install directory: new first, legacy second.
+# Usage: pfsdir_install_find <module_name>
+pfsdir_install_find() {
+    if [ -d "${PFSDIR_INSTALL_NEW}/$1" ]; then
+        echo "${PFSDIR_INSTALL_NEW}/$1"
+        return 0
+    fi
+    if [ -d "${PFSDIR_INSTALL_LEGACY}/$1" ]; then
+        echo "${PFSDIR_INSTALL_LEGACY}/$1"
+        return 0
+    fi
+    return 1
+}
+
+# Enumerate all install roots that currently hold entries (dedup-friendly for
+# listers like `pfsinfo --install`).
+pfsdir_install_roots() {
+    for r in "${PFSDIR_INSTALL_NEW}" "${PFSDIR_INSTALL_LEGACY}" ; do
+        [ -d "$r" ] && echo "$r"
+    done
+}
+
+pfsdir_mount_component_encode() {
+    case "$1" in
+        ""|"."|".."|*[!A-Za-z0-9._+-]*)
+            return 1
+            ;;
+    esac
+    printf '%s\n' "$1"
+}
+
+pfsdir_mount_container_from_output() {
+    local userout base
+    userout="$1"
+    base="${userout##*/}"
+    if [ -n "${EXT:-}" ]; then
+        case "${base}" in
+            *".${EXT}") base="${base%".${EXT}"}" ;;
+        esac
+    fi
+    printf '%s\n' "$base"
+}
+
+pfsdir_mount_new_dir() {
+    local container submodule
+    container="$(pfsdir_mount_component_encode "$1")" || return 1
+    submodule="$(pfsdir_mount_component_encode "$2")" || return 1
+    printf '%s/%s/%s\n' "${PFSDIR_MOUNT_NEW}" "$container" "$submodule"
+}
+
+pfsdir_mount_legacy_dir() {
+    local submodule
+    submodule="$(pfsdir_mount_component_encode "$1")" || return 1
+    printf '%s/%s\n' "${PFSDIR_MOUNT_LEGACY}" "$submodule"
+}
+
+pfsdir_mount_iter_indexes() {
+    local container_dir container submodule_dir submodule path
+
+    if [ -d "${PFSDIR_MOUNT_NEW}" ]; then
+        for container_dir in "${PFSDIR_MOUNT_NEW}"/* ; do
+            [ -d "$container_dir" ] || continue
+            container="${container_dir##*/}"
+            for submodule_dir in "$container_dir"/* ; do
+                [ -d "$submodule_dir" ] || continue
+                submodule="${submodule_dir##*/}"
+                path="$submodule_dir"
+                printf '%s\t%s\t%s\t%s\n' "$container" "$submodule" "$path" "new"
+            done
+        done
+    fi
+
+    if [ -d "${PFSDIR_MOUNT_LEGACY}" ]; then
+        for submodule_dir in "${PFSDIR_MOUNT_LEGACY}"/* ; do
+            [ -d "$submodule_dir" ] || continue
+            submodule="${submodule_dir##*/}"
+            path="$submodule_dir"
+            printf '\t%s\t%s\t%s\n' "$submodule" "$path" "legacy"
+        done
+    fi
+}
+
+pfsdir_mount_find() {
+    local query container submodule line l_container l_submodule l_path l_origin
+    local found_path found_count tab
+    query="$1"
+    found_count=0
+    tab="$(printf '\t')"
+
+    case "$query" in
+        *:*)
+            container="${query%%:*}"
+            submodule="${query#*:}"
+            container="$(pfsdir_mount_component_encode "$container")" || return 1
+            submodule="$(pfsdir_mount_component_encode "$submodule")" || return 1
+            while IFS="$tab" read -r l_container l_submodule l_path l_origin ; do
+                [ "$l_container" = "$container" ] || continue
+                [ "$l_submodule" = "$submodule" ] || continue
+                printf '%s\n' "$l_path"
+                return 0
+            done <<EOF
+$(pfsdir_mount_iter_indexes)
+EOF
+            return 1
+            ;;
+        *)
+            submodule="$(pfsdir_mount_component_encode "$query")" || return 1
+            while IFS="$tab" read -r l_container l_submodule l_path l_origin ; do
+                [ "$l_submodule" = "$submodule" ] || continue
+                if [ "$l_origin" = "legacy" ]; then
+                    continue
+                fi
+                found_count=$((found_count + 1))
+                found_path="$l_path"
+            done <<EOF
+$(pfsdir_mount_iter_indexes)
+EOF
+
+            if [ "$found_count" -eq 1 ]; then
+                printf '%s\n' "$found_path"
+                return 0
+            fi
+            if [ "$found_count" -gt 1 ]; then
+                printf 'pfsdir_mount_find: ambiguous submodule "%s"; use container:submodule\n' "$submodule" >&2
+                return 2
+            fi
+
+            if [ -d "${PFSDIR_MOUNT_LEGACY}/${submodule}" ]; then
+                printf '%s\n' "${PFSDIR_MOUNT_LEGACY}/${submodule}"
+                return 0
+            fi
+            return 1
+            ;;
+    esac
+}
+TMPFSLIMIT=100000
+
+# pfs-utils runtime config (see /etc/pfs-utils.conf)
+# Precedence: env > /etc/pfs-utils.conf > built-in default ("pfs")
+_pfs_env_EXT="${EXT-}"
+PFS_UTILS_CONF="${PFS_UTILS_CONF:-/etc/pfs-utils.conf}"
+if [ -r "$PFS_UTILS_CONF" ]; then
+    # shellcheck source=/dev/null
+    . "$PFS_UTILS_CONF"
+fi
+[ -n "$_pfs_env_EXT" ] && EXT="$_pfs_env_EXT"
+unset _pfs_env_EXT
+: "${EXT:=pfs}"
+
+# https://github.com/util-linux/util-linux/issues/2309
+[ `mount -V |awk '{print $4}' |awk -F. '{print $1$2}'` -gt 238 ] && a2="=" || a2=":"
+copyramdir="/tmp/.mountRAM"
+prefixmp="/mnt/."
+changesDir="/mnt/live/memory/changes/"
+aufsroot="$(`which busybox 2>/dev/null` mount |grep -E ' on / type aufs ')"
+[ "$aufsroot" ] && SYSMNT=/$(cut -f2 -d/ /sys/fs/aufs/si_$(grep ' / aufs' /proc/mounts | cut -f2 -d= | tr ',' ' ' | cut -f1 -d' ')/br0)
+if [ -f /etc/initvars ] ; then
+        . /etc/initvars
+        copyramdir=${SYSMNT}/copy2ram/
+        prefixmp=${SYSMNT}/bundles/
+        changesDir=${SYSMNT}/changes/
+fi
+
+: "${INITRD_DETECTORS_DIR:=/usr/lib/pfs-utils/initrd-detectors}"
+_INITRD_DETECTED=""
+
+_run_initrd_detection() {
+    [ -n "$_INITRD_DETECTED" ] && return 0
+
+    INITRD_NAME=unknown
+    INITRD_LAYERING=""
+    INITRD_AUFS_PREFIX=""
+    INITRD_DOWNLOAD_DIR=""
+    INITRD_SOURCE_PREFIX=""
+
+    if [ -d "$INITRD_DETECTORS_DIR" ]; then
+        local f base fn
+        for f in "$INITRD_DETECTORS_DIR"/[0-9]*-*.sh; do
+            [ -f "$f" ] || continue
+            # shellcheck source=/dev/null
+            . "$f"
+            base="${f##*/}"; base="${base%.sh}"; base="${base#*-}"
+            fn="detect_${base}"
+            if command -v "$fn" >/dev/null 2>&1 && "$fn" 2>/dev/null; then
+                _INITRD_DETECTED=1
+                return 0
+            fi
+        done
+    fi
+
+    _INITRD_DETECTED=1
+    return 0
+}
+
+_detect_initrd() {
+    _run_initrd_detection
+    printf '%s\n' "$INITRD_NAME"
+}
+
+compression="-b 512K -comp xz"
+compression_fast="-comp lz4"
+if echo $compression |grep -q xz; then
+	if uname -m | grep -q -e "86" -e "32" -e "64" ;then
+	compression="$compression -Xbcj x86" 
+	else 
+	compression="$compression -Xbcj x86,arm"
+	fi
+fi
+
+#user config
+[ -f /etc/pfs.cfg ] && . /etc/pfs.cfg
+
+usage () {
+	printf '%s is a library for pfs-utils\n\n' "$(basename "$0")" 
+	echo "Usage:" 
+	echo "	$(basename $0) <function> <pars>"
+	echo "		OR"
+	echo -e "	. $(realpath $0) ;  <function> <pars> \n"
+	echo "functions list:"
+	echo "$(cat $0 |grep -E '^.*[[:space:]]*\(\).*\{[[:space:]]*$' |sed 's/().*{//')"
+	exit 1
+}
+
+COL(){
+color_red='\033[0;31m'
+color_green='\033[0;32m'
+color_yellow='\033[0;33m'
+color_blue='\033[0;34m'
+color_default='\033[0m'
+}
+
+exitmsg() {
+	if [ "$2" -ne 0 ] ; then
+	{ printf "%b%s%b\n" "$color_red" "$1" "$color_default" ; } >&2
+	[ "$3" ] || exit $2 
+	fi
+} 
+
+allow_only_root() {
+    if [ "0$UID" -ne 0 ]; then
+        exitmsg "Only root can run $0" -1
+    fi
+}
+
+mklist () {
+#mklist source_dir [dest_dir] [pack_name] [container_name]
+source_dir="$(realpath "$1")"
+[ "$2" ] && dest_dir="$(realpath "$2")" || dest_dir="$source_dir"
+pack_name="$(basename "${1%.$EXT}")"
+[ "$3" ] && pack_name="$3"
+container_name="$pack_name"
+[ "$4" ] && container_name="$4"
+mount_new_dir="$(pfsdir_mount_new_dir "$container_name" "$pack_name")" || return 1
+mount_legacy_dir="$(pfsdir_mount_legacy_dir "$pack_name")" || return 1
+exclude_pattern='^/.wh..wh.|^'"$PFSDIR"'|^'"$PFSDIR_MOUNT_LEGACY"'|^'"$PFSDIR_MOUNT_NEW"
+canonical_dir="${dest_dir}${mount_new_dir}"
+legacy_dir="${dest_dir}${mount_legacy_dir}"
+canonical_parent="$(dirname "${canonical_dir}")"
+canonical_base="$(basename "${canonical_dir}")"
+tmp_dir=""
+backup_dir=""
+#[ "$(pwd)" != "/" ] && find "${source_dir}${PFSDIR}/mount/" -mindepth 1 -maxdepth 1  -exec rm -rf "{}" \; 2>/dev/null
+    mkdir -p "${canonical_parent}" || return 1
+
+tmp_dir="$(mktemp -d "${canonical_parent}/.${canonical_base}.tmp.XXXXXX")" || return 1
+
+printf 'name="%s"\n' "$pack_name" > "${tmp_dir}/pfs.specs" || {
+    rm -rf "${tmp_dir}"
+    return 1
+}
+
+find "${source_dir}" ! -type d        | sed "s:$source_dir::" | grep -E -v "$exclude_pattern" > "${tmp_dir}/pfs.files"
+grep_status="$?"
+if [ "${grep_status}" -ne 0 ] && [ "${grep_status}" -ne 1 ]; then
+    rm -rf "${tmp_dir}"
+    return 1
+fi
+
+find "${source_dir}"   -type d -empty | sed "s:$source_dir::" | grep -E -v "$exclude_pattern" > "${tmp_dir}/pfs.dirs.empty"
+grep_status="$?"
+if [ "${grep_status}" -ne 0 ] && [ "${grep_status}" -ne 1 ]; then
+    rm -rf "${tmp_dir}"
+    return 1
+fi
+
+[ -z "${PFS_MKLIST_TEST_FAIL_BEFORE_RENAME:-}" ] || {
+    rm -rf "${tmp_dir}"
+    return 1
+}
+
+if [ -e "${canonical_dir}" ]; then
+    backup_dir="$(mktemp -d "${canonical_parent}/.${canonical_base}.bak.XXXXXX")" || {
+        rm -rf "${tmp_dir}"
+        return 1
+    }
+    rmdir "${backup_dir}" || {
+        rm -rf "${tmp_dir}" "${backup_dir}"
+        return 1
+    }
+    mv "${canonical_dir}" "${backup_dir}" || {
+        rm -rf "${tmp_dir}"
+        return 1
+    }
+fi
+
+mv "${tmp_dir}" "${canonical_dir}" || {
+    if [ -n "${backup_dir}" ] && [ -e "${backup_dir}" ]; then
+        mv "${backup_dir}" "${canonical_dir}" 2>/dev/null
+    fi
+    rm -rf "${tmp_dir}"
+    return 1
+}
+
+if [ -n "${backup_dir}" ] && [ -e "${backup_dir}" ]; then
+    rm -rf "${backup_dir}" || return 1
+fi
+
+if [ "${PFS_MKLIST_WRITE_LEGACY_MIRROR:-0}" = "1" ]; then
+    mkdir -p "${legacy_dir}" || return 1
+    cp -f "${canonical_dir}/pfs.specs" "${legacy_dir}/pfs.specs" || return 1
+    cp -f "${canonical_dir}/pfs.files" "${legacy_dir}/pfs.files" || return 1
+    cp -f "${canonical_dir}/pfs.dirs.empty" "${legacy_dir}/pfs.dirs.empty" || return 1
+fi
+#[ -s "${dest_dir}${PFSDIR}/mount/${pack_name}/pfs.dirs.empty" ] || rm "${dest_dir}${PFSDIR}/mount/${pack_name}/pfs.dirs.empty"
+#exitmsg "mklist error" $?
+}
+
+checkramfreeb () {
+	# Return free RAM in kilobytes. Self-contained: reads /proc/meminfo
+	# MemAvailable (kernel 3.14+, always accurate including reclaimable
+	# page cache and slab). Falls back to `free -k` available column, then
+	# to `MemFree + Buffers + Cached`. No external dependencies.
+	local mem_avail mem_free mem_buffers mem_cached
+	mem_avail="$(awk '/^MemAvailable:/ {print $2; exit}' /proc/meminfo 2>/dev/null)"
+	case "${mem_avail}" in
+		''|*[!0-9]*) mem_avail="" ;;
+	esac
+	if [ -z "${mem_avail}" ] ; then
+		mem_avail="$(free -k 2>/dev/null | awk '/^Mem:/ {print $7; exit}')"
+		case "${mem_avail}" in
+			''|*[!0-9]*) mem_avail="" ;;
+		esac
+	fi
+	if [ -z "${mem_avail}" ] ; then
+		mem_free="$(awk '/^MemFree:/ {print $2; exit}' /proc/meminfo 2>/dev/null)"
+		mem_buffers="$(awk '/^Buffers:/ {print $2; exit}' /proc/meminfo 2>/dev/null)"
+		mem_cached="$(awk '/^Cached:/ {print $2; exit}' /proc/meminfo 2>/dev/null)"
+		mem_avail="$(( ${mem_free:-0} + ${mem_buffers:-0} + ${mem_cached:-0} ))"
+	fi
+	echo "${mem_avail:-0}"
+}
+
+# --- v5 layering helpers (moved from pfsload/pfsunload so they are visible
+#     to every consumer that sources `pfs`) ---
+layer_state_dir="/run/pfs-utils/layer-map"
+
+pfs_debug() {
+    [ "${PFS_DEBUG:-0}" = "1" ] || return 0
+    echo "$*" >&2
+}
+
+detect_layering_mode() {
+    if [ -n "${PFS_LAYERING:-}" ] ; then
+        printf '%s\n' "$PFS_LAYERING"
+        return 0
+    fi
+    _run_initrd_detection
+    if [ -n "$INITRD_LAYERING" ]; then
+        printf '%s\n' "$INITRD_LAYERING"
+    else
+        echo "aufs"
+    fi
+}
+
+pfs_aufs_only_runtime() {
+    mode="$(detect_layering_mode 2>/dev/null)"
+    case "$mode" in
+        overlay)
+            echo "AUFS-only operation; OverlayFS runtime use is pfsrun/pfsexec." >&2
+            return 8
+            ;;
+        aufs)
+            return 0
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
+detect_aufs_initrd_prefix() {
+    _run_initrd_detection
+    [ -n "$INITRD_AUFS_PREFIX" ] || return 1
+    printf '%s\n' "$INITRD_AUFS_PREFIX"
+}
+
+detect_download_dir() {
+    _run_initrd_detection
+    [ -n "$INITRD_DOWNLOAD_DIR" ] || return 1
+    printf '%s\n' "$INITRD_DOWNLOAD_DIR"
+}
+
+detect_source_prefix() {
+    _run_initrd_detection
+    [ -n "$INITRD_SOURCE_PREFIX" ] || return 1
+    printf '%s\n' "$INITRD_SOURCE_PREFIX"
+}
+
+layer_state_file() {
+    echo "${layer_state_dir}/${1}.layer"
+}
+
+write_layer_state() {
+    # name mode mountpoint layer_path
+    mkdir -p "${layer_state_dir}" 2>/dev/null || return 0
+    {
+        printf 'mode=%s\n' "$2"
+        printf 'mountpoint=%s\n' "$3"
+        printf 'layer_path=%s\n' "$4"
+    } > "$(layer_state_file "$1")"
+}
+
+read_layer_state() {
+    local file_path
+    file_path="$(layer_state_file "$1")"
+    [ -f "${file_path}" ] || return 1
+    while IFS='=' read -r key value ; do
+        case "${key}" in
+            mode) saved_mode="${value}" ;;
+            mountpoint) saved_mountpoint="${value}" ;;
+            layer_path) saved_layer_path="${value}" ;;
+        esac
+    done < "${file_path}"
+    return 0
+}
+
+remove_layer_state() {
+    rm -f "$(layer_state_file "$1")" 2>/dev/null
+}
+
+
+
+checksfs_for_layering() {
+    local mode
+    mode="$(detect_layering_mode 2>/dev/null)"
+    case "$mode" in
+        aufs)
+            checksfsxzb
+            ;;
+        overlay)
+            grep -q '[[:space:]]overlay$' /proc/filesystems 2>/dev/null || return 1
+            grep -qE '[[:space:]](squashfs|erofs)$' /proc/filesystems 2>/dev/null || return 1
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+checksfsxzb () {
+[ "$aufsroot" ] || return 1
+grep squashfs /proc/filesystems || return 1
+grep aufs /proc/filesystems     || return 1
+#check xz
+kerneluname="$(uname -r)"
+kernel1ver="$(echo -n "${kerneluname}" | cut -f 1 -d '.' | cut -f 1 -d '-')"
+if [ ${kernel1ver} -lt 3 ];then
+  kernel2ver="$(echo -n "${kerneluname}" | cut -f 2 -d '.' | cut -f 1 -d '-')"
+  if [ ${kernel2ver} -lt 6 ];then
+    return 1
+  else
+    kernel3ver="$(echo -n "${kerneluname}" | cut -f 3 -d '.' | cut -f 1 -d '-')"
+    if [ ${kernel3ver} -lt 38 ]; then
+      return 1
+    fi
+  fi
+fi
+return 0
+}
+
+disktypeb () {
+if disktype $1 2>/dev/null ; then 
+	return 0
+else
+	ftest=$(file $1)
+if $(echo $ftest |grep -E -qi cannot.*open) ; then
+		echo $ftest
+		return 1
+elif $(echo $ftest |grep -E -qi block.*special) ;then
+		echo $(blkid -s TYPE $1)
+		return 0
+	else 
+		echo $ftest
+		return 0
+	fi
+fi
+}
+
+fs_type () {
+local diskinfo magic0 magic1024
+
+# Deterministic byte-level checks for compressed images:
+# - squashfs magic at offset 0
+# - erofs magic at offset 1024
+magic0="$(LC_ALL=C dd if="$1" bs=1 count=4 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+magic1024="$(LC_ALL=C dd if="$1" bs=1 skip=1024 count=4 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+
+case "$magic0" in
+  68737173|73717368)
+    echo 'squashfs'
+    return 0
+    ;;
+esac
+
+case "$magic1024" in
+  e2e1f5e0|e0f5e1e2)
+    echo 'erofs'
+    return 0
+    ;;
+esac
+
+diskinfo="$(disktypeb "$1" 2>/dev/null)"
+if echo "${diskinfo}" | grep -qi -F "Ext2" ;then
+  echo 'ext2'
+  return 0
+elif echo "${diskinfo}" | grep -qi -F "Ext3" ;then
+  echo 'ext3'
+  return 0
+elif echo "${diskinfo}" | grep -qi -F "Ext4" ;then
+  echo 'ext4'
+  return 0
+elif echo "${diskinfo}" | grep  -qi "ISO.*9660" ;then
+  echo 'iso9660'
+  return 0
+fi
+
+echo 'unknown'
+return 1
+}
+
+lddcheck () {
+	local rootdir alllibs
+[ "${1}" != "" ] && rootdir="${1}" || rootdir="./"
+if [ ! -d "${rootdir}" ]; then
+  echo "Directory \"${rootdir}\" not found!" >&2; exit 1
+fi
+alllibs="$(find "${rootdir}" ! -type d -name "*.so*")" 
+find "${rootdir}" -type f -executable | while read chfile; do [ "$(file --brief "${chfile}" | grep -E "LSB executable|shared object")" ] && ldd "${chfile}" 2>/dev/null; done | grep -E '\.so$|\.so\.[0-9]' | sed 's/(..........)/()/' | sort -u | sed 's/[ \t]*//;s/.* =>  ()//;s/ => .*$//;s/ ()//' | while read exlib; do echo "${alllibs}" | grep -q -F "${exlib}" || echo "${exlib}"; done | grep -v -F "linux-gate.so" | sort -uf
+return 0
+}
+
+
+losetupb() { losetup "$@" || losetup-FULL "$@"   ; }
+mountb()   { mount "$@" || busybox mount "$@"  ; }
+umountb()  { umount "$@" || busybox umount "$@" ; }
+
+mkaufs_rollback () {
+    _N="$1"
+    umount "$SYSMNT/aufs${_N}" 2>/dev/null
+    umount "$SYSMNT/changes${_N}" 2>/dev/null
+    rmdir "$SYSMNT/aufs${_N}" 2>/dev/null
+    rm -rf "$SYSMNT/changes${_N}" 2>/dev/null
+    rm -f "$SYSMNT/aufs${_N}.lock" 2>/dev/null
+}
+
+mkaufs () {
+#make new aufs
+N=1
+while [ -f $SYSMNT/aufs${N}.lock ] ; do  N=$(($N +1)) ; done 
+#which systemctl >/dev/null 2>&1 && systemctl daemon-reload #220804 sfs prar2207
+echo "$SYSMNT/aufs$N" > $SYSMNT/aufs${N}.lock || return 1
+mkdir $SYSMNT/changes$N || { mkaufs_rollback "$N" ; return 1 ; }
+mount -t tmpfs tmpfs /$SYSMNT/changes$N || { mkaufs_rollback "$N" ; return 1 ; }
+mkdir $SYSMNT/aufs$N || { mkaufs_rollback "$N" ; return 1 ; }
+mount -t aufs -o dirs=/$SYSMNT/changes$N/=rw aufs /$SYSMNT/aufs$N && echo "$SYSMNT/aufs$N" && return 0
+mkaufs_rollback "$N"
+return 1
+#mount -t aufs -o dirs=/$SYSMNT/changes$N/=rw aufs /$SYSMNT/aufs$N 2>/dev/null && echo "$SYSMNT/aufs$N" || return 1
+}
+
+#mkaufs(){ mkaufs0 2>/dev/null ; } 
+
+mkoverlay_chroot() {
+# Build isolated overlay chroot. Each .pfs is loop-mounted as squashfs
+# under $SYSMNT/changes$N/lowers/<basename> — strictly OUTSIDE aufs view.
+# Layers deduped by absolute path. Directory layers passed through.
+    N=1
+    while [ -f "$SYSMNT/aufs${N}.lock" ] ; do N=$((N + 1)) ; done
+    echo "$SYSMNT/aufs$N" > "$SYSMNT/aufs${N}.lock"
+    mkdir -p "$SYSMNT/changes$N" || return 1
+    mount -t tmpfs tmpfs "$SYSMNT/changes$N" || return 1
+    mkdir -p "$SYSMNT/changes$N/upper" \
+             "$SYSMNT/changes$N/work" \
+             "$SYSMNT/changes$N/lowers" \
+             "$SYSMNT/aufs$N" || return 1
+
+    lowers=""
+    seen=""
+    for _layer in "$@" ; do
+        if [ -d "$_layer" ] ; then
+            _abs="$(realpath -- "$_layer" 2>/dev/null)" || _abs="$_layer"
+            case "
+$seen
+" in *"
+$_abs
+"*) continue;; esac
+            seen="${seen}${seen:+
+}${_abs}"
+            lowers="${lowers:+${lowers}:}${_abs}"
+            continue
+        fi
+        if [ ! -f "$_layer" ] ; then
+            _mko_chroot_rollback "$N"
+            return 1
+        fi
+
+        _abs="$(realpath -- "$_layer" 2>/dev/null)" || _abs="$_layer"
+        case "
+$seen
+" in *"
+$_abs
+"*) continue;; esac
+        seen="${seen}${seen:+
+}${_abs}"
+
+        _bn="$(basename -- "$_layer")"
+        _mp="$SYSMNT/changes$N/lowers/$_bn"
+        mkdir -p "$_mp" || {
+            _mko_chroot_rollback "$N"
+            return 1
+        }
+        if [ "$(fs_type "$_abs" 2>/dev/null)" = "erofs" ] ; then
+            _fstype="erofs"
+        else
+            _fstype="squashfs"
+        fi
+        if ! mount -t "$_fstype" -o loop,ro "$_abs" "$_mp" ; then
+            _mko_chroot_rollback "$N"
+            return 1
+        fi
+        lowers="${lowers:+${lowers}:}${_mp}"
+    done
+
+    if ! mount -t overlay overlay \
+            -o "lowerdir=${lowers},upperdir=$SYSMNT/changes$N/upper,workdir=$SYSMNT/changes$N/work" \
+            "$SYSMNT/aufs$N" ; then
+        _mko_chroot_rollback "$N"
+        return 1
+    fi
+    echo "$SYSMNT/aufs$N"
+}
+
+_mko_chroot_rollback() {
+    _N="$1"
+    if [ -d "$SYSMNT/changes${_N}/lowers" ] ; then
+        for _mp in "$SYSMNT/changes${_N}/lowers"/* ; do
+            [ -d "$_mp" ] && umount "$_mp" 2>/dev/null
+        done
+    fi
+    umount "$SYSMNT/changes${_N}" 2>/dev/null
+    rmdir "$SYSMNT/aufs${_N}" 2>/dev/null
+    rm -rf "$SYSMNT/changes${_N}" 2>/dev/null
+    rm -f "$SYSMNT/aufs${_N}.lock" 2>/dev/null
+}
+
+pfs_mountpoint_is_mounted() {
+    _mp="$1"
+    awk -v mp="$_mp" '$2 == mp { found=1 } END { exit(found ? 0 : 1) }' /proc/mounts
+}
+
+pfs_unmount_path() {
+    _mp="$1"
+    pfs_mountpoint_is_mounted "$_mp" || return 0
+    umount -d "$_mp" 2>/dev/null || umount "$_mp" 2>/dev/null || umount -l "$_mp" 2>/dev/null
+}
+
+pfs_cleanup_mount_tree() {
+    _mp="$1"
+    pfs_unmount_path "$_mp"
+    pfs_mountpoint_is_mounted "$_mp" && return 1
+    rm -rf "$_mp" 2>/dev/null
+}
+
+delaufs3 () {
+#remove aufs 
+[ $1 ] || return 1
+umount $SYSMNT/aufs$1 2>/dev/null || umount -l $SYSMNT/aufs$1 2>/dev/null
+# Unmount per-session squashfs lowers before tearing down tmpfs.
+if [ -d "$SYSMNT/changes${1}/lowers" ] ; then
+    for _mp in "$SYSMNT/changes${1}/lowers"/* ; do
+        [ -d "$_mp" ] && umount "$_mp" 2>/dev/null
+    done
+fi
+rmdir $SYSMNT/aufs$1 2>/dev/null
+if [ "$(grep changes$1 /proc/mounts)" ]; then
+	umount -d $SYSMNT/changes$1 &&	rm -rf $SYSMNT/changes$1
+else
+	rm -rf $SYSMNT/changes$1
+fi 2>/dev/null
+if [ -d $SYSMNT/bundles$1 ]; then
+	ls -1 $SYSMNT/bundles$1 | while read D
+	do
+		pfs_cleanup_mount_tree "$SYSMNT/bundles$1/$D"
+	done
+	 rmdir $SYSMNT/bundles$1 2>/dev/null || rm -rf $SYSMNT/bundles$1
+fi 2>/dev/null
+if [ "$(grep tmpfs$1 /proc/mounts)" ]; then
+	umount $SYSMNT/tmpfs$1 && 	rmdir $SYSMNT/tmpfs$1
+else
+	rm -rf  $SYSMNT/tmpfs$1
+fi 2>/dev/null
+ls -1 $SYSMNT | grep -E  "aufs${1}$|changes${1}$|bundles${1}$" && return 3
+rm -f $SYSMNT/aufs${1}.lock $SYSMNT/overlay${1}.lock
+}
+
+delaufs () {
+#remove aufs from $1 to $2
+[ $1 ] || return 2
+End="$1" ; [ $2 ] && End="$2"
+for N in $( seq $1 $End ) ; do
+	for tm in {sys,proc,dev}; do
+		while grep $SYSMNT/aufs$N/$tm /proc/mounts; do
+			echo $SYSMNT/aufs$N/$tm
+			umount $SYSMNT/aufs$N/$tm
+		done
+	done
+umount $SYSMNT/aufs$N 2>/dev/null || umount -l $SYSMNT/aufs$N 2>/dev/null
+# Unmount per-session squashfs lowers before tearing down tmpfs.
+if [ -d "$SYSMNT/changes${N}/lowers" ] ; then
+    for _mp in "$SYSMNT/changes${N}/lowers"/* ; do
+        [ -d "$_mp" ] && umount "$_mp" 2>/dev/null
+    done
+fi
+rmdir $SYSMNT/aufs$N 2>/dev/null
+if [ "$(grep changes$N /proc/mounts)" ]; then
+	umount -d $SYSMNT/changes$N &&	rm -rf $SYSMNT/changes$N
+else
+	rm -rf $SYSMNT/changes$N
+fi 2>/dev/null
+if [ -d $SYSMNT/bundles$N ]; then
+	ls -1A $SYSMNT/bundles$N | while read D
+	do
+		pfs_cleanup_mount_tree "$SYSMNT/bundles$N/$D"
+	done
+	 rmdir $SYSMNT/bundles$N 2>/dev/null || rm -rf $SYSMNT/bundles$N
+fi 2>/dev/null
+if [ "$(grep tmpfs$N /proc/mounts)" ]; then
+	umount $SYSMNT/tmpfs$N && 	rmdir $SYSMNT/tmpfs$N
+else
+	rm -rf  $SYSMNT/tmpfs$N
+fi 2>/dev/null
+ls -1 $SYSMNT | grep -E  "aufs${N}$|changes${N}$|bundles${N}$" && delaufs_error=yes
+rm -f $SYSMNT/aufs${N}.lock $SYSMNT/overlay${N}.lock
+done
+[ $delaufs_error ] && return 3
+return 0
+}
+
+delaufsl () {
+#remove aufs from $1 to $2
+[ $1 ] || return 2
+End="$1" ; [ $2 ] && End="$2"
+for N in $( seq $1 $End ) ; do
+	for tm in {sys,proc,dev}; do
+		while grep $SYSMNT/aufs$N/$tm /proc/mounts; do
+			echo $SYSMNT/aufs$N/$tm
+			umount $SYSMNT/aufs$N/$tm
+		done
+	done
+umount -l $SYSMNT/aufs$N 2>/dev/null
+rmdir $SYSMNT/aufs$N 2>/dev/null
+if [ "$(grep changes$N /proc/mounts)" ]; then
+	umount -dl $SYSMNT/changes$N &&	rm -rf $SYSMNT/changes$N
+else
+	rm -rf $SYSMNT/changes$N
+fi 2>/dev/null
+if [ -d $SYSMNT/bundles$N ]; then
+	ls -1A $SYSMNT/bundles$N | while read D
+	do
+		umount -dl $SYSMNT/bundles$N/$D && 	rmdir $SYSMNT/bundles$N/$D
+	done
+	 rmdir $SYSMNT/bundles$N
+fi 2>/dev/null
+if [ "$(grep tmpfs$N /proc/mounts)" ]; then
+	umount -l $SYSMNT/tmpfs$N && 	rmdir $SYSMNT/tmpfs$N
+else
+	rm -rf  $SYSMNT/tmpfs$N
+fi 2>/dev/null
+ls -1 $SYSMNT | grep -E  "aufs${N}$|changes${N}$|bundles${N}$" && delaufs_error=yes
+rm -f $SYSMNT/aufs${N}.lock
+done
+[ $delaufs_error ] && return 3
+return 0
+}
+
+
+_warn_addlayer_deprecated_once () {
+	caller_name="$(basename "$0")"
+	marker_line="addlayer:${caller_name}"
+	warn_text="pfs-utils: DEPRECATED: direct addlayer() call from ${caller_name}. Use addlayer_dispatch(). See pfs-utils.8."
+
+	if [ -n "$XDG_RUNTIME_DIR" -a -d "$XDG_RUNTIME_DIR" ] ; then
+		deprecations_file="${XDG_RUNTIME_DIR%/}/pfs-utils.deprecations"
+		if touch "$deprecations_file" 2>/dev/null ; then
+			grep -F -x -q "$marker_line" "$deprecations_file" 2>/dev/null && return 0
+			echo "$warn_text" >&2
+			echo "$marker_line" >> "$deprecations_file" 2>/dev/null
+			return 0
+		fi
+	fi
+
+	echo "$warn_text" >&2
+}
+
+addlayer_aufs() {
+#add new aufs layer, $1 - aufs number, $2 - layer source
+NEWLAYER=$(realpath "$2") || return 1
+AUFSMNT="/"
+case "$1" in
+	0) shift;;
+	[1-9]) N=$1
+		if [ $N -lt $(ls -d /sys/fs/aufs/si_* | wc -w) ]; then
+			AUFSMNT=$SYSMNT/aufs$N
+			shift
+		else
+			return 2
+		fi
+	;;
+	*) return 3
+esac
+[ "$(grep aufs$N /proc/mounts)" ] || return 4
+MODNAME="$(basename "$NEWLAYER")"
+#if df --output=fstype $NEWLAYER |grep -q ^aufs$ ;then
+if [ "$(cat /proc/mounts |grep -E '^'`df "$NEWLAYER" |tail -1 |cut -f1 -d " "`' ' |cut -f3 -d " " |uniq)" = aufs ];then
+	[ "$(grep $SYSMNT/tmpfs$N /proc/mounts)" ] || ( mkdir $SYSMNT/tmpfs$N && mount -t tmpfs tmpfs $SYSMNT/tmpfs$N )
+	cp -auPR "$NEWLAYER" "$SYSMNT/tmpfs$N/"
+	NEWLAYER="${SYSMNT}/tmpfs${N}/$(basename $NEWLAYER)"
+fi
+	case $(file -b $NEWLAYER) in
+		*directory)
+			mkdir -p "$SYSMNT/bundles$N/$MODNAME"
+			mount --bind "$NEWLAYER" "/$SYSMNT/bundles$N/$MODNAME"
+			NEWLAYER="$SYSMNT/bundles$N/$MODNAME"
+		;;
+		*)
+			mkdir -p "$SYSMNT/bundles$N/$MODNAME"
+			if [ "$(fs_type "$NEWLAYER" 2>/dev/null)" = "erofs" ] ; then
+				mount -t erofs -o loop "$NEWLAYER" "/$SYSMNT/bundles$N/$MODNAME"
+			else
+				mount -t squashfs -o loop "$NEWLAYER" "/$SYSMNT/bundles$N/$MODNAME"
+			fi
+			NEWLAYER="$SYSMNT/bundles$N/$MODNAME"
+		;;
+	esac
+# https://github.com/util-linux/util-linux/issues/2309
+	mount -o remount,add${a2}1:"$NEWLAYER"=ro+wh "$AUFSMNT" || return 5
+#	mount -o remount,add:1:"$NEWLAYER"=ro+wh "$AUFSMNT" 2>/dev/null ||
+#	busybox mount -o remount,add:1:"$NEWLAYER"=ro+wh "$AUFSMNT" ||
+#	return 5
+echo $NEWLAYER
+}
+
+mkoverlay() {
+# make new overlay session mount
+	N=1
+	while [ -f "${SYSMNT%/}/overlay${N}.lock" ] ; do
+		N=$((N + 1))
+	done
+
+	lowerdir="/"
+	if [ -n "$1" ] ; then
+		lowerdir="$(realpath "$1")" || return 1
+	fi
+
+	changes_dir="${SYSMNT%/}/changes${N}"
+	upper_dir="${changes_dir}/upper"
+	work_dir="${changes_dir}/work"
+	merged_dir="${SYSMNT%/}/aufs${N}"
+
+	mkdir -p "$changes_dir" "$upper_dir" "$work_dir" "$merged_dir" || return 1
+	mount -t tmpfs tmpfs "$changes_dir" || return 1
+	mkdir -p "$upper_dir" "$work_dir" || return 1
+	mount -t overlay -o "lowerdir=${lowerdir},upperdir=${upper_dir},workdir=${work_dir}" overlay "$merged_dir" || return 1
+	echo "$merged_dir" > "${SYSMNT%/}/overlay${N}.lock"
+	echo "$merged_dir"
+}
+
+_overlay_warn_session_model_once() {
+	if [ -z "${_PFS_OVERLAY_SESSION_WARNED}" ] ; then
+		echo "OverlayFS session-model: new processes see updated layers" >&2
+		_PFS_OVERLAY_SESSION_WARNED=1
+	fi
+}
+
+_overlay_get_mount_target() {
+	case "$1" in
+		0|"") echo "/" ;;
+		[1-9]|[1-9][0-9]*) echo "${SYSMNT%/}/aufs$1" ;;
+		*) return 3 ;;
+	esac
+}
+
+_overlay_get_opt_value() {
+	old_ifs="$IFS"
+	IFS=','
+	for opt in $1 ; do
+		case "$opt" in
+			$2=*)
+				IFS="$old_ifs"
+				echo "${opt#*=}"
+				return 0
+			;;
+		esac
+	done
+	IFS="$old_ifs"
+	return 1
+}
+
+_overlay_strip_core_opts() {
+	result=""
+	old_ifs="$IFS"
+	IFS=','
+	for opt in $1 ; do
+		case "$opt" in
+			lowerdir=*|upperdir=*|workdir=*)
+				continue
+			;;
+		esac
+		if [ -n "$result" ] ; then
+			result="${result},${opt}"
+		else
+			result="$opt"
+		fi
+	done
+	IFS="$old_ifs"
+	echo "$result"
+}
+
+_overlay_remount_with_lower() {
+	target_mount="$1"
+	base_opts="$2"
+	new_lowerdir="$3"
+
+	upperdir="$(_overlay_get_opt_value "$base_opts" upperdir)" || return 6
+	workdir="$(_overlay_get_opt_value "$base_opts" workdir)" || return 6
+	extra_opts="$(_overlay_strip_core_opts "$base_opts")"
+
+	if [ -n "$extra_opts" ] ; then
+		mount_opts="${extra_opts},lowerdir=${new_lowerdir},upperdir=${upperdir},workdir=${workdir}"
+	else
+		mount_opts="lowerdir=${new_lowerdir},upperdir=${upperdir},workdir=${workdir}"
+	fi
+
+	umount "$target_mount" || return 5
+	mount -t overlay -o "$mount_opts" overlay "$target_mount" || return 5
+	return 0
+}
+
+_overlay_prepare_layer_mount() {
+	layer_num="$1"
+	layer_src="$(realpath "$2")" || return 1
+	modname="$(basename "$layer_src")"
+	bundle_dir="${SYSMNT%/}/bundles${layer_num}/${modname}"
+
+	case "$(file -b "$layer_src")" in
+		*directory)
+			mkdir -p "$bundle_dir" || return 1
+			mount --bind "$layer_src" "$bundle_dir" || return 5
+			echo "$bundle_dir"
+		;;
+		*)
+			mkdir -p "$bundle_dir" || return 1
+			if [ "$(fs_type "$layer_src" 2>/dev/null)" = "erofs" ] ; then
+				mount -t erofs -o loop "$layer_src" "$bundle_dir" || return 5
+			else
+				mount -t squashfs -o loop "$layer_src" "$bundle_dir" || return 5
+			fi
+			echo "$bundle_dir"
+		;;
+	esac
+}
+
+_overlay_layer_cleanup() {
+	layer_mount="$1"
+	layer_num="$2"
+
+	if awk -v mp="$layer_mount" '$2 == mp { found=1 } END { exit(found ? 0 : 1) }' /proc/mounts ; then
+		umount -d "$layer_mount" 2>/dev/null || umount "$layer_mount" 2>/dev/null
+	fi
+	rmdir "$layer_mount" 2>/dev/null
+	rmdir "${SYSMNT%/}/bundles${layer_num}" 2>/dev/null
+}
+
+addlayer_overlay() {
+# add new overlay layer, $1 - session number, $2 - layer source
+	case "$#" in
+		1) set -- 0 "$1" ;;
+		2) ;;
+		*) return 3 ;;
+	esac
+
+	layer_num="$1"
+	target_mount="$(_overlay_get_mount_target "$layer_num")" || return 3
+	mount_opts="$(awk -v mp="$target_mount" '$2 == mp && $3 == "overlay" { print $4; exit }' /proc/mounts)"
+	[ -n "$mount_opts" ] || return 4
+
+	old_lowerdir="$(_overlay_get_opt_value "$mount_opts" lowerdir)" || return 6
+	new_layer_mount="$(_overlay_prepare_layer_mount "$layer_num" "$2")" || return $?
+	new_lowerdir="${new_layer_mount}:${old_lowerdir}"
+
+	_overlay_warn_session_model_once
+	if ! _overlay_remount_with_lower "$target_mount" "$mount_opts" "$new_lowerdir" ; then
+		_overlay_layer_cleanup "$new_layer_mount" "$layer_num"
+		return 5
+	fi
+
+	echo "$new_layer_mount"
+}
+
+deloverlay() {
+# remove overlay layer, $1 - session number, $2 - mounted layer path
+	case "$#" in
+		1) set -- 0 "$1" ;;
+		2) ;;
+		*) return 3 ;;
+	esac
+
+	layer_num="$1"
+	target_mount="$(_overlay_get_mount_target "$layer_num")" || return 3
+	mount_opts="$(awk -v mp="$target_mount" '$2 == mp && $3 == "overlay" { print $4; exit }' /proc/mounts)"
+	[ -n "$mount_opts" ] || return 4
+
+	old_lowerdir="$(_overlay_get_opt_value "$mount_opts" lowerdir)" || return 6
+	remove_layer="$2"
+	if [ -e "$remove_layer" ] ; then
+		remove_layer="$(realpath "$remove_layer")" || return 1
+	fi
+
+	new_lowerdir=""
+	removed_layer=""
+	old_ifs="$IFS"
+	IFS=':'
+	for layer in $old_lowerdir ; do
+		if [ "$layer" = "$remove_layer" ] ; then
+			removed_layer="$layer"
+			continue
+		fi
+		if [ -n "$new_lowerdir" ] ; then
+			new_lowerdir="${new_lowerdir}:${layer}"
+		else
+			new_lowerdir="$layer"
+		fi
+	done
+	IFS="$old_ifs"
+
+	[ -n "$removed_layer" ] || return 6
+	[ -n "$new_lowerdir" ] || return 7
+
+	_overlay_remount_with_lower "$target_mount" "$mount_opts" "$new_lowerdir" || return 5
+
+	case "$removed_layer" in
+		"${SYSMNT%/}/bundles${layer_num}"/*)
+			_overlay_layer_cleanup "$removed_layer" "$layer_num"
+		;;
+	esac
+}
+
+addlayer_dispatch() {
+	case "$#" in
+		1) set -- 0 "$1" ;;
+		2) ;;
+		*) return 3 ;;
+	esac
+
+	layering_mode="$(detect_layering_mode 2>/dev/null)"
+	[ -n "$layering_mode" ] || layering_mode=aufs
+
+	case "$layering_mode" in
+		aufs) addlayer_aufs "$@" ;;
+		overlay) addlayer_overlay "$@" ;;
+		*)
+			echo "Unknown PFS layering mode: $layering_mode" >&2
+			return 8
+		;;
+	esac
+}
+
+addlayer() {
+	_warn_addlayer_deprecated_once
+	addlayer_dispatch "$@"
+}
+
+mksqmod(){
+#make module
+eval mksquashfs "${1}" "${2}" ${compression} -noappend ${noprogress} ${useproc} $wh $devnull
+exitmsg "error create squashfs module" $? $3
+}
+
+pfsramfree () {
+#rm unmounted modules and empty dirs from $copyramdir 
+if [ "$1" ]; then
+	[ -f "$1" ] && fsname="`basename $(realpath "$1")`" || fsname="$(basename "$1")"
+	fullname=$(echo "${copyramdir}/${fsname}" |sed 's://:/:')
+	[ -f "$fullname" ] &&  rm -f "$fullname" || return 1
+else
+	if [ -d "${copyramdir}" ]; then
+    find "${copyramdir}" -mindepth 1 -type f 2>/dev/null | while read rampfs ; do
+		losetupb -a | grep -q "${rampfs}" || rm -f "$rampfs"
+    done
+    find "${copyramdir}" -mindepth 1 -type d -empty 2>/dev/null | while read empdir ; do
+		rmdir --parents $empdir 2>/dev/null
+	done
+	fi
+fi
+}
+
+pfs_update_caches () {
+#update caches, icons, menus, etc after load/unload modules
+kernel_release="$(uname -r)"
+pfs_update_cache_run () {
+if [ "${PFS_UPDATE_CACHES_SYNC:-}" = "1" ]; then
+    "$@" >/dev/null 2>&1 || true
+else
+    "$@" >/dev/null 2>&1 &
+fi
+}
+[ "$(find "$1/lib" "$1/usr/lib" "$1/usr/local/lib" "$1/usr/X11R6/lib" -type f -name "*.so" 2>/dev/null)" ] && command -v ldconfig >/dev/null 2>&1 && ldconfig >/dev/null 2>&1
+[ -d "$1/usr/share/mime/" ] && command -v update-mime-database >/dev/null 2>&1 && pfs_update_cache_run update-mime-database /usr/share/mime
+{ [ -d "$1/usr/lib/modules/${kernel_release}" ] || [ -d "$1/lib/modules/${kernel_release}" ]; } && command -v depmod >/dev/null 2>&1 && pfs_update_cache_run depmod
+#[ -d "$1/usr/lib/gdk-pixbuf-2.0/" ]  && gdk-pixbuf-query-loaders --update-cache &
+[ -d "$1/usr/lib" ] && [ -n "$(find "$1/usr/lib/" -maxdepth 2 -type d -name gdk-pixbuf-2.0 2>/dev/null)" ] && command -v gdk-pixbuf-query-loaders >/dev/null 2>&1 && pfs_update_cache_run gdk-pixbuf-query-loaders --update-cache
+[ -d "$1/usr/lib/gio/modules/" ] && command -v gio-querymodules >/dev/null 2>&1 && pfs_update_cache_run gio-querymodules /usr/lib/gio/modules
+[ -d "$1/usr/share/icons/hicolor/" ] && command -v gtk-update-icon-cache >/dev/null 2>&1 && pfs_update_cache_run gtk-update-icon-cache -f -i -q /usr/share/icons/hicolor
+[ -d "$1/usr/share/glib-2.0/schemas/" ] && command -v glib-compile-schemas >/dev/null 2>&1 && pfs_update_cache_run glib-compile-schemas /usr/share/glib-2.0/schemas/
+[ -d "$1/usr/lib/sysusers.d" ] && command -v systemd-sysusers >/dev/null 2>&1 && pfs_update_cache_run systemd-sysusers
+Xx(){
+if [ -d "$1/usr/share/applications/" -o -d "$1/usr/local/share/applications/" ] ; then 
+	update-desktop-database -q &
+	touch /usr/share/applications/screensavers &
+fi
+for font_dir in /usr/share/fonts{,/default}/TTF  /usr/X11R6/lib/X11/fonts/TTF ; do
+    if [ -d "$1/${font_dir}" ]; then
+	fcneed=on
+	mkfontscale ${font_dir} & 
+	mkfontdir ${font_dir} &
+    fi
+done
+[ $fcneed ] && fc-cache -f -s &
+}
+{ [ -d "$1/usr/share/applications/" ] || [ -d "$1/usr/local/share/applications/" ]; } && command -v update-desktop-database >/dev/null 2>&1 && pfs_update_cache_run update-desktop-database -q /usr/share/applications
+[ -d "$1/usr/share/fonts" ] && command -v fc-cache >/dev/null 2>&1 && pfs_update_cache_run fc-cache -f -s
+}
+
+checkdeps () {
+# $1 module mount point
+list=$(find ${1}${PFSDIR}/mount/ -name pfs.depends -exec cat "{}" \; |sort |uniq)
+founded=$(printf '%s\n%s\n' "$list" "$(pfsinfo |sort |uniq)" |sort |uniq -d)
+printf '%s\n%s\n' "$founded" "$list" |sort |uniq -u
+}
+
+lsblocked () {
+LSOF=$( lsof   | awk '{print $9}' |grep "/..*" | grep -Ev "/proc|/sys|/run|/tmp|/dev|/home" | sort -u)
+for a in $LSOF ; do
+[ -f $a ] || continue
+[ -f $changesDir/$a ] && continue
+blockFiles="$blockFiles\n$a"
+done
+
+for bundle in $(aufs-n --raw '$bundle') ; do
+if [ -n "$(printf '%s\n%s\n' "${blockFiles}" "$(find "$bundle" | sed "s:$bundle::")" |sort |uniq -d)" ] ; then
+echo "$bundle"
+fi
+done
+}
+
+
+if [ "$(basename $0)" = "pfs" ] ;then
+[ $1 ] || HELP
+# v5 CLI verbs (dispatched before generic function call so --flags are not
+# passed to $command directly)
+case "$1" in
+    --detect-initrd)
+        shift
+        _detect_initrd
+        exit 0
+        ;;
+    --layering-mode)
+        shift
+        detect_layering_mode
+        exit 0
+        ;;
+    --aufs-initrd-prefix)
+        shift
+        if detect_aufs_initrd_prefix; then
+            exit 0
+        fi
+        cat >&2 <<EOF
+pfs: cannot autodetect AUFS_INITRD_PREFIX
+pfs: detected initrd: ${INITRD_NAME:-unknown}
+pfs: tried detectors in: $INITRD_DETECTORS_DIR
+pfs: set AUFS_INITRD_PREFIX explicitly in /etc/modman.conf or add a
+pfs: detector script for this initrd type.
+EOF
+        exit 1
+        ;;
+    --download-dir)
+        shift
+        if detect_download_dir; then
+            exit 0
+        fi
+        cat >&2 <<EOF
+pfs: cannot autodetect DOWNLOAD_DIR
+pfs: detected initrd: ${INITRD_NAME:-unknown}
+pfs: detector returned no download path (e.g. 'dir=' missing in /proc/cmdline).
+pfs: set DOWNLOAD_DIR explicitly in /etc/modman.conf.
+EOF
+        exit 1
+        ;;
+    --source-prefix)
+        shift
+        if detect_source_prefix; then
+            exit 0
+        fi
+        cat >&2 <<EOF
+pfs: cannot determine initrd source prefix
+pfs: detected initrd: ${INITRD_NAME:-unknown}
+pfs: detector did not provide INITRD_SOURCE_PREFIX (read-only modules dir).
+EOF
+        exit 1
+        ;;
+    --fs-type|--fstype)
+        shift
+        [ $# -ge 1 ] || { echo "pfs --fs-type: needs a file argument" >&2; exit 2; }
+        fs_type "$1"
+        exit $?
+        ;;
+    --version|-V)
+        echo "pfs-utils v5 (2026.04-01)"
+        exit 0
+        ;;
+esac
+command="$1"
+shift
+$command "$@"
+exitmsg "$command  ERROR!!!" "$?"
+fi 

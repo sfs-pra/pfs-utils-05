@@ -1,0 +1,118 @@
+.TH PFS\-UTILS\-LEGACY 8 "2026-05-06" "pfs-utils-cli" "PuppyRus PFS Module Tools"
+.SH NAME
+pfs\-utils\-legacy \- v4 compatibility siblings for pfs-utils
+.SH SYNOPSIS
+.B pfs1
+[\fIFUNCTION\fR [\fIARGS\fR...]]
+.br
+.B pfs\-v4
+[\fIFUNCTION\fR [\fIARGS\fR...]]
+.B pfsload\-v4
+[\fIOPTIONS\fR]
+\fIFILESYSTEM\fR
+.br
+.B pfsunload\-v4
+[\fIOPTIONS\fR]
+\fIFILESYSTEM\fR
+.SH DESCRIPTION
+These utilities are compatibility siblings retained for v4 backward
+compatibility.
+They implement the same command-line interface as their v5 counterparts but
+use the older AUFS-only load/unload logic without the v5 layering dispatch,
+OverlayFS support, or layer-map state tracking.
+.PP
+New scripts and tools should use the v5 utilities instead:
+.BR pfs (8),
+.BR pfsload (8),
+and
+.BR pfsunload (8).
+.SS pfs1 and pfs\-v4
+.B pfs1
+is the v4 pfs library.
+.B pfs\-v4
+is installed as an alias for
+.B pfs1
+by the PKGBUILD.
+Both provide the same function library as
+.BR pfs (8)
+but without v5 additions such as
+.BR addlayer_dispatch ,
+.BR detect_layering_mode ,
+.BR write_layer_state ,
+and
+.BR read_layer_state .
+.PP
+Source them the same way as
+.BR pfs (8):
+.RS
+.nf
+\&. "$(which pfs\-v4)"
+.fi
+.RE
+.SS pfsload\-v4
+.B pfsload\-v4
+is the explicit v4 load sibling.
+It accepts the same options as
+.BR pfsload (8)
+(\fB\-u\fR, \fB\-l\fR, \fB\-n\fR, \fB\-r\fR, \fB\-\-ro\fR)
+but uses the v4 AUFS layer insertion logic
+.RB ( remount,add:N )
+instead of the v5
+.B addlayer_dispatch
+path.
+It does not write layer-map state, so
+.B pfsunload
+may not find the layer correctly; use
+.B pfsunload\-v4
+to unload modules loaded with
+.BR pfsload\-v4 .
+.SS pfsunload\-v4
+.B pfsunload\-v4
+is the explicit v4 unload sibling.
+It accepts the same options as
+.BR pfsunload (8)
+(\fB\-n\fR, \fB\-s\fR, \fB\-v\fR)
+but uses a simpler mount-point lookup
+.RB ( /proc/mounts
+grep) instead of the v5 multi-fallback resolution.
+It does not read or clean up layer-map state.
+.SH KEY BEHAVIORAL DIFFERENCES FROM V5
+.TP
+No OverlayFS support
+v4 siblings always use AUFS.
+On overlay-root systems they will fail.
+.TP
+No layer-map state
+.B pfsload\-v4
+does not write to
+.IR /run/pfs-utils/layer-map/ ,
+so
+.B pfsunload
+(v5) cannot find the layer path.
+Always pair
+.B pfsload\-v4
+with
+.BR pfsunload\-v4 .
+.TP
+Simpler mount-point resolution
+.B pfsunload\-v4
+uses a plain
+.B /proc/mounts
+grep rather than the v5 multi-fallback logic.
+It may fail to find modules loaded with non-standard paths.
+.TP
+No erofs support
+v4 siblings only handle squashfs modules.
+.SH EXIT STATUS
+Same as
+.BR pfsload (8)
+and
+.BR pfsunload (8)
+respectively.
+.SH SEE ALSO
+.BR pfs (8),
+.BR pfsload (8),
+.BR pfsunload (8),
+.BR pfs\-utils (8)
+.SH AUTHORS
+PuppyRus pfs-utils maintainers.

@@ -1,0 +1,103 @@
+.TH PFSREBUILD 8 "2026-05-06" "pfs-utils-cli" "PuppyRus PFS Module Tools"
+.SH NAME
+pfsrebuild \- rebuild an AUFS-loaded or installed pfs package into a new module
+.SH SYNOPSIS
+.B pfsrebuild
+\fIPACKAGE\fR
+[\fImkpfs-options\fR...]
+.SH DESCRIPTION
+.B pfsrebuild
+reconstructs a
+.B .pfs
+module from a package that is currently loaded through AUFS or installed in
+the pfs-utils registry.
+.PP
+AUFS-only: rebuilding from the running root requires a system-wide AUFS-loaded
+module. OverlayFS roots cannot provide that hot-loaded root view; use
+.BR mkpfs (8),
+.BR chroot2pfs (8),
+or
+.BR pfsrun (8)
+for OverlayFS build or private-runtime workflows.
+.PP
+It locates the package's
+.B pfs.files
+manifest, copies the listed files into a temporary build directory, then calls
+.BR mkpfs (8)
+to compress the result into a new
+.B .pfs
+file in the current directory.
+.PP
+For container modules (those that bundle multiple sub-packages),
+.B pfsrebuild
+rebuilds each sub-package individually and then merges them back into a
+container.
+.PP
+Any extra arguments after
+.I PACKAGE
+are passed directly to
+.BR mkpfs (8).
+.SH OPTIONS
+.TP
+.BR \-h ", " \-\-help
+Print usage and exit.
+.TP
+.B \-\-nopfs
+Build the staging directory but do not compress it into a
+.B .pfs
+file.
+Useful for inspecting the reconstructed tree before committing.
+.SH EXAMPLES
+.PP
+Rebuild an AUFS-loaded package:
+.RS
+.nf
+pfsrebuild myapp
+.fi
+.RE
+.PP
+Rebuild with faster compression:
+.RS
+.nf
+pfsrebuild myapp \-f
+.fi
+.RE
+.PP
+Rebuild and inspect the staging directory without compressing:
+.RS
+.nf
+pfsrebuild myapp \-\-nopfs
+.fi
+.RE
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+Usage error.
+.TP
+.B 4
+Package not found in any registry.
+.PP
+Other non-zero codes propagate from
+.BR mkpfs (8).
+.SH FILES
+.TP
+.I ./build_<package>/<package>/
+Temporary staging directory; removed after successful compression.
+.TP
+.I /var/lib/pfs-utils/mount/<package>/pfs.files
+File manifest for a mounted package.
+.TP
+.I /var/lib/pfs-utils/install/<package>/pfs.files
+File manifest for an installed package.
+.SH SEE ALSO
+.BR mkpfs (8),
+.BR chroot2pfs (8),
+.BR pfsextract (8),
+.BR pfsinfo (8),
+.BR pfsrun (8),
+.BR pfs\-utils (8)
+.SH AUTHORS
+PuppyRus pfs-utils maintainers.

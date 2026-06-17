@@ -1,0 +1,299 @@
+.TH pfs-utils 8  "marсh, 2017" "version 3.*" "PFS-UTILS"
+.SH NAME
+pfs-utils \- scripts kit to manage squashfs modules for live linux distributions 
+.SH DESCRIPTION
+Scripts collection to create, merge, extract and load/unload pfs modules
+.TP
+\- mkpfs \- create and merge modules
+.TP
+\- pfsextraxt \- extract packages from module, install packages 
+.TP
+\- pfsload \- AUFS-only: insert modules (dirs, images) to root file system
+.TP
+\- pfsunload \- AUFS-only: remove modules from root file system
+.TP
+\- pfsuninstall \- remove package files from system
+.TP
+\- pfsrebuild \- AUFS-only for loaded-module runtime rebuilds; installed/offline registry rebuilds are separate
+.TP
+\- sync2layer \- create layer and move changes from top RW layer to new
+.TP
+\- pfsinfo \- list packsges in module
+.TP
+\- pfs \- pfs-utils scripts library 
+
+.SH V5 NEW VERBS
+Library functions added for v5 behavior are implemented in the
+\fBpfs\fR library and used by the runtime wrappers.
+
+.SS pfs _detect_initrd
+.B pfs _detect_initrd
+Detects current initrd/boot stack.
+
+.TP
+Usage
+.BI "pfs _detect_initrd"
+
+.TP
+Output (exactly one line)
+The function prints one of:
+
+.TP
+.B rootaufs2
+- rootaufs2-style AUFS stack
+.TP
+.B uird
+- UIRD stack
+.TP
+.B livekit
+- livekit stack
+.TP
+.B porteus
+- Porteus stack
+.TP
+.B unknown
+- fallback when no markers match
+
+.TP
+Return
+.RS
+.I 0
+on success.
+.RE
+
+.TP
+Notes
+The detection logic is internal and may change only as documented by implementation
+changes.
+
+.SS pfs addlayer_dispatch
+.B pfs addlayer_dispatch
+Dispatch helper for internal AUFS layer insertion and OverlayFS private-namespace setup. It does not make OverlayFS support system-wide hot attach or detach.
+
+.TP
+Usage
+.BI "pfs addlayer_dispatch " FILE " [SESSION]"
+
+If only one argument is passed, it is treated as
+.B FILE
+and session defaults to
+.B 0
+.
+
+.TP
+Layering selection
+.TP
+.B PFS_LAYERING
+When set to
+.BR aufs " or " overlay , it is used directly.
+.TP
+Unset
+Calls
+.B _detect_initrd
+and maps
+.BR uird / livekit " to overlay, " rootaufs2 / porteus / unknown " to aufs.
+
+.TP
+Return values
+.TP
+.I 0
+on success, writes the created layer mount path
+.TP
+.I 8
+for unknown layering mode
+.TP
+Other exit codes
+propagated from underlying
+.B addlayer_aufs
+or private OverlayFS namespace setup.
+.PP
+AUFS-only: system-wide hot attach/detach is not supported on OverlayFS roots;
+use
+.BR pfsrun (8)
+for OverlayFS runtime execution.
+
+.SS mkpfs-erofs
+.B mkpfs-erofs
+Create an EROFS module image.
+
+.TP
+Usage
+.BI "mkpfs-erofs [OPTIONS] SOURCE_DIR"
+
+.TP
+Options
+.TP
+.B -o, --out-file PATH
+Output image path. Default is
+.B ./<source>.pfs
+.TP
+.B -h, --help
+Print help and exit.
+.TP
+Additional args
+All extra args are passed to
+.B mkfs.erofs
+unchanged.
+
+.TP
+Compression
+If no compression option is supplied, the wrapper prepends
+.B -zlz4hc
+by default.
+
+.TP
+Examples
+.RS
+.nf
+mkpfs-erofs ./busybox-rootfs
+mkpfs-erofs --out-file busybox.pfs ./busybox-rootfs
+mkpfs-erofs --threads=4 ./busybox-rootfs
+.fi
+.RE
+
+.TP
+Exit status
+Returns wrapper usage errors as
+.B 1
+when arguments are missing or invalid, and
+.B 127
+when
+.B mkfs.erofs
+is not available; otherwise returns underlying
+.B mkfs.erofs
+status.
+
+.SH ADDITIONAL TOOLS
+The following tools are included in pfs-utils and complement the core load/unload workflow.
+.PP
+.B pfsrun
+\(em primary user-facing launcher for OverlayFS runtime execution. It runs an application inside a private mount namespace with a .pfs module overlaid on the system root.
+Use this on overlay-root systems where AUFS dynamic-add is unavailable and per-process isolation is acceptable.
+.PP
+.B pfsexec
+\(em lower-level overlay namespace helper used by
+.BR pfsrun (8) .
+Auto-detects the main binary from the module name, drops privileges to the
+invoking user, binds
+.IR /proc , /sys , /dev , /run/user/$UID , /tmp/.X11-unix , /run/dbus
+and the user's
+.B $HOME
+into the namespace, and propagates Wayland/X11 environment.
+Falls back to an interactive shell when auto-detection fails.
+See
+.BR pfsrun (8).
+.PP
+.B pfsactivate / pfsdeactivate
+\(em opt-in symlink-injection methodology (Porteus neko's pattern). Loop-mounts a module
+read-only and creates symlinks system-wide for every file in it. Reversible via
+.BR pfsdeactivate (8).
+EXPERIMENTAL: symlinks are not transparent (O_NOFOLLOW, st_dev); on aufs-root prefer
+.BR pfsload (8)
+for kernel-level transparency.
+.SH MOUNT INDEX LAYOUT
+The canonical v5 mount index is stored under
+.BR /var/lib/pfs/mount/<container-module>/<submodule>/ .
+Each index directory contains
+.BR pfs.files ,
+.BR pfs.dirs.empty ,
+.BR pfs.specs ,
+and may contain
+.BR pfs.depends .
+.PP
+The stable identity tuple is
+.BR "(container-module, submodule)" .
+Display and lookup use the qualified
+.B container:submodule
+form when the container is known. Single-module indexes use the default
+.B <module>/<module>
+identity.
+.PP
+Duplicate submodule names across containers are valid. In that case callers must use
+.B container:submodule
+and an unqualified duplicate must fail as ambiguous. It must not select an arbitrary match.
+.PP
+The v4 compatibility mirror remains
+.BR /etc/packages/mount/<submodule>/ .
+This flat path is a fallback for old indexes and consumers. It cannot safely disambiguate duplicate names because it has no container component.
+.PP
+Current lookup tools read canonical indexes first and keep the legacy fallback. New metadata should be written to the canonical two-level layout and mirrored only for compatibility.
+.PP
+.B pfsmigrate-mount
+copies legacy flat mount indexes from
+.BR /etc/packages/mount/<submodule>/
+into
+.BR /var/lib/pfs/mount/legacy/<submodule>/ .
+Migrated entries use
+.B legacy:<submodule>
+provenance. The command keeps legacy source directories for fallback readers, is idempotent when destination content matches, and reports a non-destructive conflict when destination content differs. Legacy flat paths still cannot disambiguate duplicate submodule names and must not become the canonical source of truth.
+.SH ENVIRONMENT
+.TP
+.B PFS_LAYERING
+If set to
+.B aufs
+or
+.B overlay
+it overrides layering auto-detection and forces addlayer dispatch mode.
+The overlay value is for private namespace setup and build-time helpers; it does not enable system-wide hot attach or detach on OverlayFS roots.
+When unset, initrd-based detection is used.
+
+.SH DEPRECATION
+.TP
+.B addlayer
+The legacy direct
+.B addlayer
+function is retained for compatibility and now delegates to
+.B addlayer_dispatch
+.
+
+.TP
+Warning behavior
+A warning is written to stderr one time per caller name when
+.B addlayer
+is used directly.
+
+.B Message:
+.RS
+.nf
+pfs-utils: DEPRECATED: direct addlayer() call from <caller>. Use addlayer_dispatch(). See pfs-utils.8.
+.fi
+.RE
+
+.TP
+Record file
+If
+.B XDG_RUNTIME_DIR
+is set and writable, warning state is tracked in
+.B $XDG_RUNTIME_DIR/pfs-utils.deprecations
+; otherwise the warning is always printed for each direct call.
+
+.SH V4 SIBLINGS
+Compatibility wrappers are installed for explicit rollback to v4 behavior.
+.TP
+.B pfsload-v4
+Run legacy v4-compatible load logic.
+.TP
+.B pfsunload-v4
+Run legacy v4-compatible unload logic.
+
+.TP
+Current package status
+No versioned
+.B pfs-v4
+library wrapper is present in this snapshot.
+
+.SH EXIT STATUS
+all utils returns a zero exit status if the job finished susfull.
+.SH AUTHOR
+forum.puppyrus.org team (sfs, zay, DdShuruck)
+.TP
+Wiki:   http://wiki.puppyrus.org/puppyrus/pr218/pfs3
+.TP
+Forum:  http://forum.puppyrus.org/index.php?board=30.0
+.SH SEE ALSO
+.BR mksquashfs (1),
+.BR pfsexec (8),
+.BR pfsrun (8),
+.BR pfsactivate (8),
+.BR pfsdeactivate (8),
+.BR modman (8)

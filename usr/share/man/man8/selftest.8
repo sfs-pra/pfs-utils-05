@@ -1,0 +1,62 @@
+.TH SELFTEST 8 "2026-05-06" "pfs-utils-cli" "PuppyRus PFS Module Tools"
+.SH NAME
+selftest \- run the pfs-utils built-in self-test suite
+.SH SYNOPSIS
+.B selftest
+.SH DESCRIPTION
+.B selftest
+exercises the core pfs-utils utilities on the running system.
+It creates temporary test modules, loads and unloads them, verifies
+filesystem type detection, checks v5 feature flags, and runs regression
+tests for known bug fixes.
+.PP
+The test suite is organized into four waves:
+.TP
+.B Legacy suite
+Tests for
+.BR mkpfs ,
+.BR pfsextract ,
+.BR pfsinfo ,
+.BR mountfile ,
+.BR pfsload ,
+.BR pfsunload ,
+and
+.BR pfsrebuild .
+.TP
+.B v5 Phase 0
+Tests for erofs support, initrd detection, layering mode dispatch,
+v4 sibling presence, deprecation warning behavior, machine-readable output,
+and the FHS install registry.
+.TP
+.B Wave A (regression)
+Tests for shell-injection rejection, double-load prevention, error output
+routing, and layer-map cleanup.
+.TP
+.B Wave B (edge cases)
+Tests for space rejection, Unicode filenames, empty source handling, and
+load/unload roundtrip idempotency.
+.TP
+.B Wave C (systemd + perf)
+Tests for the
+.B modman\-load@.service
+template and a performance gate ensuring v5 load/unload is within 2x of v4.
+.PP
+.B selftest
+must run as root.
+All temporary files are created in the current directory and cleaned up on
+exit.
+.SH EXIT STATUS
+.TP
+.B 0
+All tests passed (or skipped).
+.TP
+.B 1
+A test failed and the suite was aborted.
+.SH SEE ALSO
+.BR pfsload (8),
+.BR pfsunload (8),
+.BR mkpfs (8),
+.BR pfsextract (8),
+.BR pfs\-utils (8)
+.SH AUTHORS
+PuppyRus pfs-utils maintainers.

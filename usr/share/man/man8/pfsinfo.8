@@ -1,0 +1,163 @@
+.TH PFSINFO 8 "2026-05-06" "pfs-utils-cli" "PuppyRus PFS Module Tools"
+.SH NAME
+pfsinfo \- list packages inside a .pfs module or query mounted/installed modules
+.SH SYNOPSIS
+.B pfsinfo
+[\fIOPTIONS\fR]
+[\fIMODULE.pfs\fR]
+.SH DESCRIPTION
+.B pfsinfo
+inspects
+.B .pfs
+modules and the pfs-utils package registry.
+Without a file argument it lists packages from the mounted and installed
+registries.
+With a file argument it lists the sub-packages embedded in that module.
+.PP
+The
+.B \-\-machine
+flag switches all output to tab-separated values (TSV) suitable for
+programmatic parsing.
+This is the primary interface used by
+.BR modman (8)
+and other tools.
+.PP
+The
+.B \-\-advise
+flag measures the module with
+.BR pfsbench (8)
+and recommends the best compression profile for repacking.
+.SH OPTIONS
+.TP
+.BR \-m ", " \-\-mount
+List packages from currently mounted modules only.
+.TP
+.BR \-i ", " \-\-install
+List packages from the installed registry only.
+.TP
+.BR \-s ", " \-\-stat
+Show detailed statistics: compression algorithm, module size, uncompressed
+size, compression ratio, dependencies, and sub-packages.
+.TP
+.BR \-d ", " \-\-delimeter " " \fICHAR\fR
+Use
+.I CHAR
+as the field separator in output.
+Default is
+.BR / .
+.TP
+.B \-\-machine
+Emit machine-readable TSV output.
+.RS
+.TP
+With a file argument:
+.I name<TAB>format<TAB>size_bytes<TAB>compression
+.TP
+With
+.BR \-\-mount :
+.I name<TAB>layer<TAB>path<TAB>desc<TAB>category<TAB>version
+.TP
+With
+.BR \-\-install :
+same 6-field shape from the installed registry.
+.RE
+.TP
+.B \-\-advise
+Measure the module with
+.BR pfsbench (8)
+and print repack recommendations.
+Requires root.
+Combine with
+.B \-\-machine
+for TSV output.
+.TP
+.B \-\-full
+When used with
+.BR \-\-advise ,
+run all compression variants instead of the curated eight.
+.TP
+.BR \-h ", " \-\-help
+Print usage and exit.
+.SH EXAMPLES
+.PP
+List sub-packages in a module:
+.RS
+.nf
+pfsinfo myapp.pfs
+.fi
+.RE
+.PP
+Show statistics for a module:
+.RS
+.nf
+pfsinfo \-s myapp.pfs
+.fi
+.RE
+.PP
+List all mounted modules in machine-readable format:
+.RS
+.nf
+pfsinfo \-\-machine \-\-mount
+.fi
+.RE
+.PP
+Get module metadata as TSV:
+.RS
+.nf
+pfsinfo \-\-machine myapp.pfs
+.fi
+.RE
+.PP
+Get repack advice:
+.RS
+.nf
+pfsinfo \-\-advise myapp.pfs
+.fi
+.RE
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+File not found, or
+.B \-\-machine
+used without a required argument.
+.TP
+.B 2
+.B \-\-advise
+requires a module file.
+.TP
+.B 3
+.B \-\-advise
+must run as root.
+.TP
+.B 4
+.B pfsbench
+not found.
+.TP
+.B 5
+.B pfsbench
+failed.
+.TP
+.B 6
+.B pfsbench
+produced no CSV data.
+.SH FILES
+.TP
+.I /var/lib/pfs-utils/mount/
+Runtime mount registry (v5 FHS location).
+.TP
+.I /var/lib/pfs-utils/install/
+Installed package registry (v5 FHS location).
+.TP
+.I /etc/packages/install/
+Legacy install registry (v4 location, still searched as fallback).
+.SH SEE ALSO
+.BR pfsbench (8),
+.BR pfsdepends (8),
+.BR pfsload (8),
+.BR pfsunload (8),
+.BR pfs\-utils (8)
+.SH AUTHORS
+PuppyRus pfs-utils maintainers.

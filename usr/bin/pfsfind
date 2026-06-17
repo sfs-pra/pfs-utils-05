@@ -1,0 +1,114 @@
+#!/bin/sh
+#Find file in root aufs
+#260301 sfs
+# Ensure pfs-utils binaries are resolvable via which(1) when invoked from a
+# restricted PATH (e.g. systemd, GUI, sudo without --preserve-env).
+PATH="/usr/bin:/usr/sbin:${PATH}"
+export PATH
+. $(which pfs)
+
+usage () {
+	echo -e "$(basename $0) util, find file (\$1) in modules mounted to root aufs  and in $changesDir\n" 
+	echo "Usage:" 
+	echo "	$(basename $0)  filename        - find \"filename\"  (human readble format)"
+	echo "	$(basename $0)  filename --raw  - find \"filename\"  (output separated by spaces)"
+	echo "	$(basename $0)  filename --raw  '"'$n $module'"'   - return only needed values"
+	echo "avaliable values:"
+	echo '  $n - layer number'
+	echo '  $module - modulename'
+    echo '  $submodule - submodule name (one of module sources)'
+    echo '  $path - path to file'
+    echo '  $bundle - bundle (module mount point)'
+    
+}
+
+header () {
+echo "Find file in root aufs"
+echo ""
+printf %3s "N "; printf %-50s "Module " ; printf %-30s "SubModule" ; printf  "PATH\n"
+}
+
+submodules_for_bundle_path() {
+bundle_root="$1"
+target_path="$2"
+old_mount_new="${PFSDIR_MOUNT_NEW}"
+old_mount_legacy="${PFSDIR_MOUNT_LEGACY}"
+
+PFSDIR_MOUNT_NEW="${bundle_root}${old_mount_new}"
+PFSDIR_MOUNT_LEGACY="${bundle_root}${old_mount_legacy}"
+
+pfsdir_mount_iter_indexes | while IFS= read -r idx_line ; do
+	idx_container="$(printf '%s\n' "$idx_line" | cut -f1)"
+	idx_submodule="$(printf '%s\n' "$idx_line" | cut -f2)"
+	idx_dir="$(printf '%s\n' "$idx_line" | cut -f3)"
+	[ -f "${idx_dir}/pfs.files" ] || continue
+	if grep -F -x -- "$target_path" "${idx_dir}/pfs.files" >/dev/null 2>&1; then
+		if [ -n "$idx_container" ]; then
+			printf '%s:%s\n' "$idx_container" "$idx_submodule"
+		else
+			printf '%s\n' "$idx_submodule"
+		fi
+	fi
+done | sort -u | tr '\n' ';' | sed 's/;$//'
+
+PFSDIR_MOUNT_NEW="$old_mount_new"
+PFSDIR_MOUNT_LEGACY="$old_mount_legacy"
+}
+
+listing (){
+[ -d $p ] || exit 0
+f="$(basename "$1")"
+list1=$(aufs-n --raw '$bundle' |sed 1d |while read bdl ; do   find "$bdl"  \( -type f -o -type l \) -name "$f" |sed 's#^'$(dirname $bdl)/'## ; s/'$f'$//' ; done)
+list2=$(find "$changesDir" \( -type f -o -type l \) -name "$f" |sed 's#^'$changesDir'#tmpfs/# ; s/'$f'$//')
+list="$list1 $list2"
+aufs-n --raw '$n $bundle $dname_source $bname_source' | while read a; do
+	for b in $list ; do
+		if [ "$(echo $a |awk '{print $NF}')" = "$(echo $b |awk -F/ '{print $1}' )" ]  ; then
+			n="$(echo $a |awk '{print $1}')"
+			module="$(echo $a |awk '{print $3 "/" $4}')" 
+			bundle=$(echo $a | awk '{print $2}')
+			path="$(echo $b | sed "s:"$(echo $a |awk '{print $NF}')"::")"
+			target_path="${path}${findname}"
+			submodule="$(submodules_for_bundle_path "$bundle" "$target_path")"
+			[ "$submodule" ] || submodule="is_not_pfs"
+			
+			if [ $human ] ; then 			
+				printf %3s "$n "
+				printf %-50s "$module" 
+				printf %-30s "$submodule" 
+				printf  "$path\n"
+			else
+				eval echo "$returnMe"
+			fi
+		fi
+	done
+done
+}
+
+main() {
+	case "$1" in
+	  "") usage; exit 1;;
+	  "-"*[A-Za-z]*) usage; exit 1;;
+	  *) findname="$1";;
+	esac
+
+	if  echo $@ |grep -qE "(^| )--raw( |$)" ; then
+		returnMe="$(echo $@ |sed 's/^.*--raw//')"
+		[ "$returnMe" ] || returnMe='$n $bundle $module $submodule  $path'
+	fi
+
+	if [ ! "$2" ] ;then
+		human=yes
+		header
+		listing $1
+		exit
+	elif [ "$2" = "--raw" ] ; then
+		listing $1
+		exit
+	else
+		usage
+	fi
+	exit 0
+}
+
+[ "${PFSFIND_SOURCE_ONLY:-0}" = "1" ] || main "$@"

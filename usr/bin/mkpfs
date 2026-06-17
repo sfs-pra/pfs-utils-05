@@ -1,0 +1,226 @@
+#!/bin/sh
+#PFS module creator 
+#VERSION 3.7
+# Ensure pfs-utils binaries are resolvable via which(1) when invoked from a
+# restricted PATH (e.g. systemd, GUI, sudo without --preserve-env).
+PATH="/usr/bin:/usr/sbin:${PATH}"
+export PATH
+if ! command -v pfs >/dev/null 2>&1; then
+    PATH="$(dirname "$0"):${PATH}"
+    export PATH
+fi
+. "$(which pfs)"
+
+D(){
+    sourcelist="$(find "$1" -maxdepth 1 -mindepth 1 -type d |sort)"
+    [ "$sourcelist" ] || exitmsg "no directory in '$2'" 1
+    from_dir_alias=yes
+    ondir=
+    [ "${userout}_" = "_" ] && [ ! "`echo "$arglist" |grep -- "-o "`" ] && userout="./$(basename "$1").$EXT"
+}
+M(){
+    sourcelist="$(find "$1" -maxdepth 1 -mindepth 1 -type f |grep -E ".pfs$|.xzm$|.sfs$|.squashfs$|.$EXT$" |sort)"
+    [ "$sourcelist" ] || exitmsg "no modules in '$2'" 1
+    onmod=
+    [ "${userout}_" = "_" ] && [ ! "`echo "$arglist" |grep -- "-o "`" ] && userout="./$(basename "$1").$EXT"
+}
+
+
+#help
+HLP(){
+echo "Usage: $0 <list of sources> -o out.$EXT"
+echo "Examples:"
+echo "$0 ./dir 			-make dir.${EXT} from dir"
+echo "$0 1.$EXT 2.$EXT -o 3.$EXT	-collect 1.$EXT and 2.$EXT to contaner 3.$EXT"
+echo "$0 * -o ./big.$EXT		-collect all dirs and squashfs modules from current dir to big.$EXT" 
+echo
+echo "$(_ 'Options:')"
+echo "$(_ '	-o / --out-file - output file name (if specified without the .$EXT suffix, the result will be a directory).')"
+echo "$(_ '	-w - do not include AUFS whiteouts.')"
+echo "$(_ '	-l / --local - build in place without using aufs.')"
+echo "$(_ '	-f / --fast - faster compression (larger .$EXT, but quicker to build).')"
+echo "  --mkilst  add files list to simple (non contaner) module"
+echo "$(_ '	--mksqfs / parameters for mksquashfs, compression, block size, etc. (must be the last parameter).')"
+echo "$(_ 'Aliases:')"
+echo "$(_ ' -d | -D - directories only')"
+echo "	$(basename $0) -d dir ---> $(basename $0)" '$(find dir -maxdepth 1 -mindepth 1 -type d ) -o dir.$EXT'
+echo "$(_ ' -m | -M - modules only')"
+echo "	$(basename $0) -m dir ---> $(basename $0)" '$(find dir -maxdepth 1 -mindepth 1 -type f ) -o dir.$EXT'
+exit 1
+}
+
+check_kernel(){
+    checksfs_for_layering >/dev/null 2>&1
+    exitmsg "Kernel does not support the selected layering mode. Work only 'mkpfs -l'" $?
+}
+
+reverse_words(){
+    _out=""
+    for _word in $1 ; do
+        _out="${_word}${_out:+ ${_out}}"
+    done
+    printf '%s\n' "$_out"
+}
+
+source_mount_for_mklist(){
+    _source="$1"
+    if [ -d "$_source" ] ; then
+        realpath "$_source" 2>/dev/null || printf '%s\n' "$_source"
+        return 0
+    fi
+    printf '%s/changes%s/lowers/%s\n' "${SYSMNT%/}" "$2" "$(basename "$_source")"
+}
+
+#parsing for "--mksqfs" arg
+argslist="$@"
+if  echo $argslist |grep -q -- "-*mksqfs .*" ; then
+	compression="$(echo $@ |sed 's/^.*-*mksqfs//')"
+	argslist="$(echo $@ |sed 's/-*mksqfs.*$//')"
+fi
+
+#get opts
+sourcelist=""
+inplace=""
+# v5: reject whitespace in any argument — mkpfs pipes args through
+# word-splitting (legacy design) which silently breaks paths with spaces.
+# We fail fast with a clear message instead of producing a mangled .pfs file.
+for _a in "$@" ; do
+    case "$_a" in
+        *" "*|*"	"*)
+            printf "$(_ 'mkpfs: whitespace in names is not supported: %s')\n" "$_a" >&2
+            printf 'mkpfs: whitespace in paths is not supported — rename and retry.\n' >&2
+            exit 2
+            ;;
+    esac
+done
+
+for arg in $argslist
+do
+  case "${arg}" in
+    "-o" | "--out-file") onuserout="on";;
+    "-d" | "-D") ondir="on";;
+    "-m" | "-M") onmod="on";;
+    "-h" | "--help")  HLP ;exit 1;;
+    "-q" | "--quiet" ) devnull='>/dev/null' ;;
+    "-no-progress" | "--no-progress") noprogress="-no-progress";;
+    "-processors" | "--processors" ) numproc="on";;
+    "-w") wh="-regex -e ".wh..wh."";;
+    "-l" | "--local" ) inplace=yes ;;
+    "--mklist" ) make_list=yes ;;
+    "-f" | "--fast" | "-g" ) [ "$compression_fast" ] && compression="$compression_fast" || compression="gzip";;
+    "-"*[A-Za-z]*) echo "$(basename "$0"): invalid option -- '$(echo ${arg} | tr -d '-')'" >&2; HLP; exit 1;;
+    *) if [ "${usepkname}" = "on" ]; then packname="${arg}"
+       elif [ "${ondir}" = "on" ]; then D "${arg}"
+       elif [ "${onmod}" = "on" ]; then M "${arg}"
+       elif [ "${onuserout}" = "on" ]; then userout="${arg}"
+       elif [ "${numproc}" = "on" ]; then useproc="-processors ${arg}"
+       else sourcelist="${sourcelist} ${arg}"; fi
+       onuserout="off"; usepkname="off"; usindlib="off"; numproc="off";;
+  esac
+done
+
+[ "$sourcelist" ] || HLP 
+
+allow_only_root
+
+[ "$inplace" ] || check_kernel
+
+if [ "${userout}_" = "_" ] ; then 
+  first="$(basename $(echo $sourcelist | awk '{print $1}'))" 
+  userout="$(echo ${first%.$EXT}).$EXT" 
+fi
+
+
+#1 dir, in place mode
+if [ "$inplace" = "yes" ] && [ -d $sourcelist ] 2>/dev/null ;then
+    eval echo "==== In place mode ====" $devnull
+    [ ! "$(ls -a $sourcelist)" ] && exitmsg "directory '$sourcelist' empty" 1
+    if [ $make_list ] ; then
+        if [ "$from_dir_alias" = "yes" ] ; then
+            mklist "$sourcelist" "$sourcelist" "$(basename "${sourcelist%.$EXT}")" "$(basename "${userout%.$EXT}")"
+        else
+            mklist "$sourcelist" "$sourcelist" "$(basename "${userout%.$EXT}")"
+        fi
+    fi
+    mksqmod $sourcelist "${userout}" && exit 0 
+    exitmsg "mkpfs error" 2
+fi
+
+#test sources, source must be dir or squashfs module
+for source in $sourcelist ;do
+	[ -d $source ] && continue
+	[ "$(fs_type $source)" = "squashfs" ] && continue
+	[ "$(fs_type $source)" = "erofs" ] && continue
+	exitmsg "Type of source \"$source\" is not correct" 2
+done	
+
+[ -d "$sourcelist" ] && { ls "$sourcelist" 2>/dev/null || exitmsg "\"`echo $sourcelist`\" is empty" 2 ; }
+
+layering_mode="$(detect_layering_mode 2>/dev/null)"
+[ "$layering_mode" ] || layering_mode=aufs
+
+#make temporary merge root
+case "$layering_mode" in
+  overlay)
+    overlay_sourcelist="$(reverse_words "$sourcelist")"
+    n="$(mkoverlay_chroot $overlay_sourcelist || exitmsg "mkoverlay error" 2)"
+  ;;
+  aufs)
+    n="$(mkaufs || exitmsg "mkaufs error" 2)"
+  ;;
+  *)
+    exitmsg "Unknown PFS layering mode: $layering_mode" 2
+  ;;
+esac
+nn="$(echo "$n" | sed -n 's/^.*\([0-9]\)$/\1/p')"
+[ -d "$n" ] || exitmsg "error mounting merge root" 3
+
+#add sources as layers
+if [ "$layering_mode" = "aufs" ] ; then
+    for  i in $sourcelist ;do
+        eval addlayer_dispatch "$nn" "$i" "$devnull" || exitmsg "can't insert layer to aufs $nn" 5
+    done
+fi
+
+if [ $(echo "$sourcelist" | wc -w) -eq 1 ] ;then
+  i="$(echo $sourcelist)"
+  # if source is only one - submodule name is $userout with no prefix (pfs,xzm,etc)
+  if [ $make_list ] ; then
+    if [ "$from_dir_alias" = "yes" ] ; then
+      mklist "$i" "$n" "$(basename "${i%.$EXT}")" "$(basename "${userout%.$EXT}")"
+    else
+      mklist "$i" "$n" "$(basename "${userout%.$EXT}")"
+    fi
+  fi
+else	
+  container_name="$(basename "${userout%.$EXT}")"
+  if [ "$layering_mode" = "overlay" ] ; then
+    for i in $sourcelist ;do
+      bundle_path="$(source_mount_for_mklist "$i" "$nn")"
+      name="$(basename "${i%.$EXT}")"
+      mklist "$bundle_path" "$n" "$name" "$container_name"
+    done
+  else
+    bundles=$(find $(echo $n |sed 's:aufs:bundles:') -maxdepth 1 -mindepth 1 -type d )
+    #mklist for modules, submodule name is basename source with no prefix
+    for i in $bundles ;do
+	  name="$(basename "${i%.$EXT}")"
+	  mklist "$i" "$n" "$name" "$container_name"
+    done
+  fi
+fi
+
+if echo ${userout} | grep -q "^.*\.$EXT$" ; then 
+	mksqmod "${n}" "${userout}" noexit
+else
+	echo "Please wait..."
+	rmdir ${userout} 2>/dev/null
+	[ -d "${userout}" ] && exitmsg "Output diectory already exist" 6
+	mkdir -p "$(dirname ${userout})"
+#	cp -fr "${n}" "${userout}"
+	cp -auPR "${n}" "${userout}"
+fi
+
+exitmsg "mksqmod error" $?  noexit
+delaufs "$nn" 
+exitmsg "delaufs error" $?

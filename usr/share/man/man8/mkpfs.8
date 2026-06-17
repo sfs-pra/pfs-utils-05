@@ -1,0 +1,168 @@
+.TH MKPFS 8 "2026-05-06" "pfs-utils-cli" "PuppyRus PFS Module Tools"
+.SH NAME
+mkpfs \- create or merge .pfs squashfs modules
+.SH SYNOPSIS
+.B mkpfs
+[\fIOPTIONS\fR]
+\fISOURCE\fR...
+[\fB\-o\fR \fIOUT.pfs\fR]
+.SH DESCRIPTION
+.B mkpfs
+builds a squashfs-based
+.B .pfs
+module from one or more source directories or existing
+.B .pfs
+files. Existing erofs modules are accepted as input when the kernel supports
+erofs; new erofs modules are created with
+.BR mkpfs\-erofs (8).
+When given a single directory it compresses it directly into a module.
+When given multiple sources it merges them via the selected layering backend
+(AUFS or OverlayFS) before compressing, so the result is a single container
+module.
+.PP
+If the output path has no
+.B .pfs
+suffix,
+.B mkpfs
+writes a plain directory instead of a compressed image.
+This is useful for inspecting the merged tree before committing to a module.
+.PP
+Whitespace in any argument is rejected with exit code 2; rename files before
+passing them to
+.BR mkpfs .
+.SH OPTIONS
+.TP
+.BR \-o ", " \-\-out\-file " " \fIOUT\fR
+Output file or directory path.
+Defaults to
+.I ./<first-source>.pfs
+when omitted.
+If
+.I OUT
+has no
+.B .pfs
+extension the result is a directory.
+.TP
+.BR \-d ", " \-D
+Expand the next argument as a directory alias:
+.B mkpfs \-d DIR
+is equivalent to passing every immediate subdirectory of
+.I DIR
+as a separate source.
+.TP
+.BR \-m ", " \-M
+Expand the next argument as a module alias:
+.B mkpfs \-m DIR
+is equivalent to passing every
+.B .pfs
+file found directly inside
+.I DIR
+as a separate source.
+.TP
+.BR \-l ", " \-\-local
+Build in-place without AUFS or OverlayFS.
+Useful when only one source directory has to be compressed.
+.TP
+.BR \-f ", " \-\-fast ", " \-g
+Use a faster (but larger) compression algorithm.
+Defaults to
+.B gzip
+when the
+.B pfs
+library does not define a faster preset.
+.TP
+.B \-\-mklist
+Embed a file list (pfs.files) into the module for package tracking.
+.TP
+.B \-\-mksqfs " " \fIPARAMS\fR
+Pass
+.I PARAMS
+verbatim to
+.BR mksquashfs (1).
+This option must appear last on the command line.
+.TP
+.BR \-q ", " \-\-quiet
+Suppress progress output.
+.TP
+.B \-\-no\-progress
+Suppress the
+.B mksquashfs
+progress bar.
+.TP
+.BR \-h ", " \-\-help
+Print usage and exit.
+.SH EXAMPLES
+.PP
+Build a module from a directory:
+.RS
+.nf
+mkpfs ./myapp
+.fi
+.RE
+.PP
+Merge two modules into one container:
+.RS
+.nf
+mkpfs base.pfs extras.pfs \-o combined.pfs
+.fi
+.RE
+.PP
+Merge all modules in a directory:
+.RS
+.nf
+mkpfs \-m /srv/modules \-o all.pfs
+.fi
+.RE
+.PP
+Build with custom mksquashfs options (xz, 1 MB blocks):
+.RS
+.nf
+mkpfs ./myapp \-\-mksqfs \-comp xz \-b 1M
+.fi
+.RE
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+No source specified or source directory is empty.
+.TP
+.B 2
+Whitespace detected in an argument, or mksquashfs error.
+.TP
+.B 3
+Merge root mount error.
+.TP
+.B 5
+Cannot insert layer into the merge root.
+.TP
+.B 6
+Output directory already exists.
+.SH ENVIRONMENT
+.TP
+.B PFS_LAYERING
+When set to
+.B aufs
+or
+.BR overlay ,
+overrides automatic layering detection.
+.SH FILES
+.TP
+.I /usr/bin/pfs
+Library sourced at startup; provides
+.BR mkaufs ,
+.BR mkoverlay_chroot ,
+.BR addlayer_dispatch ,
+.BR mksqmod ,
+and other helpers.
+.SH SEE ALSO
+.BR mkpfs\-erofs (8),
+.BR pfsload (8),
+.BR pfsunload (8),
+.BR pfsextract (8),
+.BR pfsrebuild (8),
+.BR pfs\-utils (8),
+.BR mksquashfs (1)
+.SH AUTHORS
+PuppyRus pfs-utils maintainers.

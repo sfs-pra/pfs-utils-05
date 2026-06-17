@@ -1,0 +1,86 @@
+.TH PFSMIGRATE\-INSTALL 8 "2026-05-06" "pfs-utils-cli" "PuppyRus PFS Module Tools"
+.SH NAME
+pfsmigrate\-install \- migrate the legacy pfs install registry to the FHS location
+.SH SYNOPSIS
+.B pfsmigrate\-install
+[\fB\-\-dry\-run\fR]
+[\fB\-\-force\fR]
+.SH DESCRIPTION
+.B pfsmigrate\-install
+moves package entries from the legacy install registry at
+.I /etc/packages/install
+to the v5 FHS location at
+.IR /var/lib/pfs-utils/install .
+.PP
+The operation is idempotent: running it multiple times is safe.
+Entries that already exist at the destination are skipped unless
+.B \-\-force
+is given.
+.PP
+This tool is part of the v5 Phase 0 migration path.
+Run it once after upgrading from pfs-utils v4 to v5 to ensure the install
+registry is in the correct location.
+.SH OPTIONS
+.TP
+.B \-\-dry\-run
+Show what would be moved without touching the disk.
+.TP
+.B \-\-force
+Overwrite existing entries at the destination.
+.TP
+.BR \-h ", " \-\-help
+Print usage and exit.
+.SH EXAMPLES
+.PP
+Preview the migration:
+.RS
+.nf
+pfsmigrate\-install \-\-dry\-run
+.fi
+.RE
+.PP
+Run the migration:
+.RS
+.nf
+pfsmigrate\-install
+.fi
+.RE
+.PP
+Force overwrite of existing entries:
+.RS
+.nf
+pfsmigrate\-install \-\-force
+.fi
+.RE
+.SH EXIT STATUS
+.TP
+.B 0
+Success (including the case where the source directory does not exist).
+.TP
+.B 1
+Must run as root, or a move operation failed.
+.SH ENVIRONMENT
+.TP
+.B PFSDIR_INSTALL_LEGACY
+Override the legacy source path.
+Default:
+.IR /etc/packages/install .
+.TP
+.B PFSDIR_INSTALL_NEW
+Override the destination path.
+Default:
+.IR /var/lib/pfs-utils/install .
+.SH FILES
+.TP
+.I /etc/packages/install/
+Legacy v4 install registry (source).
+.TP
+.I /var/lib/pfs-utils/install/
+v5 FHS install registry (destination).
+.SH SEE ALSO
+.BR pfsextract (8),
+.BR pfsuninstall (8),
+.BR pfsinfo (8),
+.BR pfs\-utils (8)
+.SH AUTHORS
+PuppyRus pfs-utils maintainers.

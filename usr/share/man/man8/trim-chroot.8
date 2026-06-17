@@ -1,0 +1,58 @@
+.TH TRIM\-CHROOT 8 "2026-05-06" "pfs-utils-cli" "PuppyRus PFS Module Tools"
+.SH NAME
+trim\-chroot \- remove disposable files from a chroot directory tree
+.SH SYNOPSIS
+.B trim\-chroot
+\fIDIR\fR
+.SH DESCRIPTION
+.B trim\-chroot
+removes cache files, build artifacts, and other disposable content from a
+chroot directory tree
+.I DIR
+to reduce the size of a
+.B .pfs
+module built from it.
+.PP
+It unconditionally removes:
+.RS
+.TP
+.I /var/log
+.TP
+.I /run
+.TP
+.I /etc/udev/hwdb.bin
+.TP
+.I /etc/ld.so.cache
+.TP
+.I /var/cache/ldconfig
+.TP
+.I /var/cache/fontconfig
+.TP
+.I /var/lib/pacman/sync
+.TP
+.I /var/cache/pacman/pkg
+.TP
+.I /usr/share/applications/mimeinfo.cache
+.RE
+.PP
+It also removes large icon sizes (256x256, 96x96), non-essential keyboard
+layout directories, and pacman mtree files.
+.PP
+.B Note:
+This utility contains many commented-out sections for optional trimming
+(locales, documentation, development headers, Python files, etc.).
+These are disabled by default and must be enabled by editing the script.
+.SH ARGUMENTS
+.TP
+.I DIR
+Root of the chroot directory tree to trim.
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.SH SEE ALSO
+.BR chroot2pfs (8),
+.BR mkpfs (8),
+.BR pfs\-utils (8)
+.SH AUTHORS
+PuppyRus pfs-utils maintainers.

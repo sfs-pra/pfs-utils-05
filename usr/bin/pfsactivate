@@ -1,0 +1,267 @@
+#!/bin/sh
+
+PATH="/usr/bin:/usr/sbin:${PATH}"
+export PATH
+
+if ! command -v pfs >/dev/null 2>&1; then
+    PATH="$(dirname "$0"):${PATH}"
+    export PATH
+fi
+
+# shellcheck source=/workspace/pfs-utils/usr/bin/pfs
+. "$(which pfs)"
+
+if [ -z "${UID:-}" ]; then
+    UID="$(id -u 2>/dev/null)"
+    export UID
+fi
+
+state_base="/run"
+cleanup_needed=0
+state_dir=""
+mount_dir=""
+mount_real=""
+state_file=""
+file_list=""
+
+usage() {
+    cat <<EOF
+$(printf '%s %s [--list] [--persist DIR] MODULE.%s' "$(_ 'Usage:')" "$(basename "$0")" "${EXT}")
+
+$(printf '%s' "$(_ 'EXPERIMENTAL — symlinks are not transparent (O_NOFOLLOW, st_dev).')")
+$(printf '%s' "$(_ 'Persistence in changes= mode is DANGEROUS. Deactivate before reboot.')")
+$(printf '%s' "$(_ 'Works on any rootfs (aufs/overlay/ext4); on aufs-root use pfsload instead for kernel-level transparency.')")
+EOF
+}
+
+activation_root() {
+    printf '%s/pfs-utils/symlink-activations\n' "${state_base%/}"
+}
+
+module_name_from_arg() {
+    module_base="$(basename "$1")"
+    case "${module_base}" in
+        *."${EXT}") module_base="${module_base%.${EXT}}" ;;
+    esac
+    printf '%s\n' "${module_base}"
+}
+
+is_protected_path() {
+    case "$1" in
+        /etc/passwd|/etc/shadow|/etc/sudoers|/etc/fstab|/etc/group|/dev/*|/proc/*|/sys/*|/boot/*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+cleanup_failed_activation() {
+    [ "${cleanup_needed}" -eq 1 ] || return 0
+
+    if [ -f "${state_file}" ] && [ -n "${mount_real}" ]; then
+        awk 'NF { lines[NR]=$0 } END { for (i=NR; i>=1; i--) print lines[i] }' "${state_file}" |
+        while IFS= read -r rel_path; do
+            target="/${rel_path}"
+            parent_dir="$(dirname "${target}")"
+            backup_path="${parent_dir}/.pfs.org.$(basename "${target}")"
+
+            if [ -L "${target}" ]; then
+                if link_target="$(readlink "${target}" 2>/dev/null)"; then
+                    case "${link_target}" in
+                        "${mount_real}"/*)
+                            rm -f "${target}"
+                            ;;
+                    esac
+                fi
+            fi
+
+            if [ -e "${backup_path}" ] || [ -L "${backup_path}" ]; then
+                if ! mv "${backup_path}" "${target}" 2>/dev/null; then
+                    :
+                fi
+            fi
+        done
+    fi
+
+    if [ -n "${mount_dir}" ] && [ -d "${mount_dir}" ]; then
+        umountb "${mount_dir}" >/dev/null 2>&1
+        rmdir "${mount_dir}" >/dev/null 2>&1
+    fi
+
+    if [ -f "${file_list}" ]; then
+        rm -f "${file_list}"
+    fi
+
+    if [ -f "${state_file}" ]; then
+        rm -f "${state_file}"
+    fi
+
+    if [ -n "${state_dir}" ] && [ -d "${state_dir}" ]; then
+        rmdir "${state_dir}" >/dev/null 2>&1
+    fi
+}
+
+show_help=""
+list_only=""
+need_persist=""
+module_arg=""
+
+for arg in "$@"; do
+    if [ -n "${need_persist}" ]; then
+        state_base="${arg}"
+        need_persist=""
+        continue
+    fi
+
+    case "${arg}" in
+        -h|--help)
+            show_help="yes"
+            ;;
+        --list)
+            list_only="yes"
+            ;;
+        --persist)
+            need_persist="yes"
+            ;;
+        -* )
+            invalid_opt="$(printf '%s' "${arg}" | tr -d '-')"
+            exitmsg "$(printf "$(_ '%s: invalid option -- %s')" "$(basename "$0")" "${invalid_opt}")" 1
+            ;;
+        *)
+            if [ -n "${module_arg}" ]; then
+                exitmsg "$(printf "$(_ '%s: too many arguments')" "$(basename "$0")")" 1
+            fi
+            module_arg="${arg}"
+            ;;
+    esac
+done
+
+if [ -n "${need_persist}" ]; then
+    exitmsg "$(printf "$(_ '%s: --persist requires DIR')" "$(basename "$0")")" 1
+fi
+
+if [ -n "${show_help}" ]; then
+    usage
+    exit 0
+fi
+
+if [ -n "${list_only}" ]; then
+    if [ -n "${module_arg}" ]; then
+        exitmsg "$(printf "$(_ '%s: --list does not accept MODULE')" "$(basename "$0")")" 1
+    fi
+
+    activation_root_path="$(activation_root)"
+    if [ -d "${activation_root_path}" ]; then
+        for active_dir in "${activation_root_path}"/*; do
+            [ -d "${active_dir}" ] || continue
+            modname="$(basename "${active_dir}")"
+            if [ -f "${active_dir}/state" ]; then
+                count="$(wc -l < "${active_dir}/state" 2>/dev/null || echo 0)"
+            else
+                count=0
+            fi
+            printf '%s\t%s\n' "${modname}" "${count}"
+        done
+    fi
+    exit 0
+fi
+
+if [ -z "${module_arg}" ]; then
+    usage
+    exit 1
+fi
+
+case "${module_arg}" in
+    *" "*|*"	"*)
+        printf "$(_ '%s: whitespace in module names is not supported: %s')\n" "$(basename "$0")" "${module_arg}" >&2
+        printf "$(_ '%s: whitespace in module paths is not supported.')\n" "$(basename "$0")" >&2
+        exit 2
+        ;;
+esac
+
+allow_only_root
+
+if [ ! -f "${module_arg}" ]; then
+    exitmsg "$(printf "$(_ 'pfsactivate: module not found: %s')" "${module_arg}")" 2
+fi
+
+module_path="$(realpath "${module_arg}")"
+module_name="$(module_name_from_arg "${module_arg}")"
+
+if ! fstype="$(fs_type "${module_path}" 2>/dev/null)"; then
+    fstype="${fstype:-unknown}"
+fi
+
+case "${fstype}" in
+    squashfs|erofs)
+        ;;
+    *)
+        exitmsg "$(printf "$(_ 'pfsactivate: unsupported module filesystem: %s')" "${module_arg}")" 3
+        ;;
+esac
+
+activation_root_path="$(activation_root)"
+state_dir="${activation_root_path}/${module_name}"
+mount_dir="${state_dir}/mount"
+state_file="${state_dir}/state"
+file_list="${state_dir}/files.list"
+
+if [ -d "${state_dir}" ]; then
+    exitmsg "$(printf "$(_ 'pfsactivate: %s already activated')" "${module_name}")" 1
+fi
+
+mkdir -p "${mount_dir}" || exitmsg "$(printf "$(_ 'pfsactivate: unable to create state dir: %s')" "${state_dir}")" 4
+cleanup_needed=1
+trap cleanup_failed_activation EXIT HUP INT TERM
+
+: > "${state_file}" || exitmsg "$(printf "$(_ 'pfsactivate: unable to create state file: %s')" "${state_file}")" 4
+
+mountb -t "${fstype}" -o loop,ro "${module_path}" "${mount_dir}" >/dev/null || exitmsg "$(printf "$(_ 'pfsactivate: unable to mount module: %s')" "${module_arg}")" 4
+mount_real="$(realpath "${mount_dir}")"
+
+find "${mount_dir}" -type f > "${file_list}" || exitmsg "$(printf "$(_ 'pfsactivate: unable to enumerate module files: %s')" "${module_arg}")" 4
+
+while IFS= read -r file_path; do
+    rel_path="${file_path#${mount_dir}/}"
+    target="/${rel_path}"
+
+    if is_protected_path "${target}"; then
+        exitmsg "$(printf "$(_ 'pfsactivate: refusing to overlay protected path: %s')" "${target}")" 1
+    fi
+done < "${file_list}"
+
+activated_count=0
+while IFS= read -r file_path; do
+    rel_path="${file_path#${mount_dir}/}"
+    target="/${rel_path}"
+    parent_dir="$(dirname "${target}")"
+    backup_path="${parent_dir}/.pfs.org.$(basename "${target}")"
+
+    if [ ! -d "${parent_dir}" ]; then
+        mkdir -p "${parent_dir}" || exitmsg "$(printf "$(_ 'pfsactivate: unable to create parent directory: %s')" "${parent_dir}")" 5
+    fi
+
+    if [ -d "${target}" ] && [ ! -L "${target}" ]; then
+        exitmsg "$(printf "$(_ 'pfsactivate: refusing to replace directory target: %s')" "${target}")" 1
+    fi
+
+    if [ -e "${target}" ] || [ -L "${target}" ]; then
+        if [ -e "${backup_path}" ] || [ -L "${backup_path}" ]; then
+            exitmsg "$(printf "$(_ 'pfsactivate: backup already exists: %s')" "${backup_path}")" 1
+        fi
+        mv "${target}" "${backup_path}" || exitmsg "$(printf "$(_ 'pfsactivate: unable to preserve original: %s')" "${target}")" 5
+    fi
+
+    ln -sf "${mount_real}/${rel_path}" "${target}" || exitmsg "$(printf "$(_ 'pfsactivate: unable to link target: %s')" "${target}")" 5
+    printf '%s\n' "${rel_path}" >> "${state_file}" || exitmsg "$(printf "$(_ 'pfsactivate: unable to update state: %s')" "${state_file}")" 5
+    activated_count=$((activated_count + 1))
+done < "${file_list}"
+
+rm -f "${file_list}"
+cleanup_needed=0
+trap - EXIT HUP INT TERM
+
+printf "$(_ 'pfsactivate: activated %s files from %s')\n" "${activated_count}" "$(basename "${module_path}")"
+exit 0
