@@ -1,0 +1,462 @@
+====== pfs-utils. Utilities for working with squashfs/erofs modules. Version 5 ======
+
+**Language:** English | [[Home-ru|Русский]]
+
+  * pfs-utils is a set of scripts that fully cover working with squashfs and erofs modules for any live (frugal) Linux distribution. :-)
+  * Version 5 builds on the 4.* line and keeps option-level backward compatibility, adding support for **OverlayFS** and **erofs** alongside the classic **AUFS** + **squashfs**.
+  * The utilities are not self-contained — individual scripts are not guaranteed to work in isolation.
+  * Every utility has a built-in ''--help'', and the main options and scenarios are described directly in this document below. :-D
+  * [[http://forum.puppyrus.org/index.php?board=176.0|Discussion]]
+  * [[https://github.com/sfs-pra/pfs-utils-05|Download]]
+
+====== What's new in v5 ======
+
+  * :!: **OverlayFS** is supported for boot-time layers, building, and private runtime execution via ''pfsrun''. AUFS only: hot attach/detach of modules to the system root is not supported on OverlayFS; for OverlayFS use ''pfsrun''.
+  * :!: **erofs** as an alternative to squashfs (see **mkpfs-erofs**) — more compact on large volumes, but less widespread.
+  * :-D **chroot2pfs** now writes its result into a directory by default rather than into a //.pfs// file (as before). To get a file, add the //.pfs// suffix to the name.
+  * New utilities: **pfsbench**, **pfsdepends**, **pfsfindlibs**, **pfsmigrate-install**, **mkpfs-erofs**, **trim-chroot**, **selftest**.
+  * **legacy v4 siblings** are kept for backward compatibility: **pfsload-v4**, **pfsunload-v4**, **pfs1**, **pfs-v4**. New scripts should use the main v5 commands; the legacy ones remain for old scripts and rollback. ;-)
+
+====== Terminology and PFS format specification ======
+
+  * A module is a squashfs (or **erofs**) archive that holds a tree of directories and files rooted at the system root for one or more programs. A squashfs/erofs archive differs from ordinary ones in that you do not need to unpack the whole archive to read a file.
+    * When a module is attached to the root AUFS, its files become available in the system. On OverlayFS use ''pfsrun'' for private runtime execution.
+  * A PFS module is a module built by **mkpfs** (or **mkpfs-erofs** for the erofs variant). It differs from an ordinary module by carrying service information (metadata).
+  * **mkpfs** builds a squashfs PFS module from one or more sources and stores metadata about each of them. When merging several sources, the selected layer is used (**AUFS** or **OverlayFS**, see ''PFS_LAYERING=overlay''). Sources can be:
+    - PFS modules
+    - Directories
+    - Files containing a filesystem inside: <code>dd if=/dev/zero of=File.img bs=1M count=10240 && mkfs.ext4 File.img</code>
+  * A PFS module built from a single source is called **simple**.
+  * A PFS module built from several sources is called **composite** (a container).
+    * With pfs-utils you can attach, detach, build, and split a composite module into its parts.
+
+:!: **Attention!** Avoid spaces and characters that have special meaning for sh/bash in file names and paths.
+
+===== Configuration files =====
+
+  * /etc/initvars — variables set by the initrd (part of the [[http://forum.puppyrus.org/index.php?topic=18733.0|ULRF]] specification)
+  * /etc/pfs.cfg — variables that account for distribution- or user-specific particulars
+  * /usr/bin/pfs — the pfs-utils function library; initial variable values are set here. This file can also be used as a configuration file.
+
+==== Variables ====
+
+  * //prefixmp=// prefix added to a module file name to derive the intermediate mount point name. It can be a directory name or a construct like ''/mnt/.''; then mount points are named ''/mnt/.module_name''.
+  * //copyramdir=// directory for the intermediate copy of modules attached with //-r// / //--toram//.
+  * //PFSDIR=// directory for storing metadata about PFS packages.
+  * //EXT=// default extension for PFS modules. Defaults to //pfs//.
+  * //SYSMNT=// directory for mounting parts of the system aufs/overlay.
+  * //compression=// compression inside squashfs. Defaults to //xz//.
+  * //compression_fast// — compression for //mkpfs -f//. Defaults to //lz4//.
+  * //LAYERING_MODE=// (new in v5) — container mode: //aufs//, //overlay//, or //auto// (detected from the initrd). Defaults to //auto//.
+
+==== Service information inside a module.pfs (metadata) ====
+
+Service information is stored inside the module separately for each source used during the **mkpfs** build. The metadata directory:
+
+  * /$PFSDIR/mount/[pfs-package-name]/ (the package name matches the source name — directory, module, or image)
+    * //pfs.files//      (List of files belonging to the PFS package)
+    * //pfs.dirs.empty// (List of empty directories in the PFS package. Optional)
+    * //pfs.depends//    (List of dependencies. Optional)
+    * //pfs.specs//      (Program name, version, etc. Optional)
+
+====== pfs-utils functionality ======
+
+  * Building a PFS module from a directory, a list of directories, or a list of simple modules.
+  * Unpacking a simple PFS module into a directory.
+  * Splitting a composite PFS module
+    * into directories
+    * into PFS modules
+  * AUFS only: attaching a module to the root AUFS
+    * to the upper layer (overriding the lower layers)
+    * to the lower layer
+    * with a copy into memory (//-r//)
+  * AUFS only: detaching a module from the root AUFS.
+  * OverlayFS runtime execution via ''pfsrun'' in a private namespace, without changing the system root.
+  * Installing a module (unpacking into the system root)
+    * installing the parts of a composite module
+  * Uninstalling a module.
+  * [[http://forum.puppyrus.org/index.php?topic=22986.msg171932#msg171932|bash completion]]
+  * Benchmark of attach/detach speed (see **pfsbench**). :-D
+  * Dependency analysis (**pfsdepends**) and ELF-lib lookup (**pfsfindlibs**).
+  * Pipeline self-test (**selftest**) to verify integrity after installation.
+
+====== Dependencies ======
+
+  * //squashfs-tools// (for squashfs)
+  * //erofs-utils// (for erofs, optional)
+  * //util-linux//
+  * //findutils//
+  * //bash//
+  * //gawk//, //grep//
+  * //aufs// and/or //overlayfs// support in the kernel
+  * For a GUI: **modman** ([[https://github.com/sfs-pra/modman|modman]] — the native GTK3 frontend for v5).
+
+====== Console commands ======
+
+The pfs-utils toolkit contains console scripts and (optionally) graphical frontends. The console utilities are common to all distributions; the recommended GUI for v5 is **modman**.
+
+===== aufs-n =====
+
+Shows information about AUFS layers.
+
+==== Options (keys): ====
+
+  * //aufs-n N// — returns the mount point of layer "N"
+  * //--raw// — full output in a pipe-friendly form
+  * //--raw '$n $source'// — returns only the values of the listed variables (see ''--help'')
+
+Typical ''aufs-n --raw'' output contains the layer number, source, and bundle path; with the ''--raw '$n $source''' template you can get only the fields you need for scripts.
+
+===== chroot2pfs =====
+
+Assembles several AUFS or **OverlayFS** layers into a new root and performs a [[https://wiki.archlinux.org/title/Chroot|chroot]] into it. Actions performed inside are saved on leaving the chroot (Ctrl+d or exit). :-)
+
+  * [[http://forum.puppyrus.org/index.php?topic=21158.0|Discussion]]
+  * **-h | --help** — built-in help
+
+:!: **Change in v5**: by default the result is written into a **directory** (NAME without the //.pfs// suffix). To get a **.pfs** file, add //.pfs// at the end of the name.
+
+==== Layer backend (new in v5) ====
+
+  * **--overlay** — use OverlayFS for the chroot root. This is the default in v5.
+  * **--aufs** — force AUFS if you need the old v4 path or overlay is unsuitable for a particular environment.
+  * **--lower**, **--upper**, **--toram** — module load modes (see **pfsload**).
+
+==== chroot variants ====
+
+  * **-c | --container** — container type.
+  * **chroot** — ordinary. The default. Sufficient for building modules from packages and other console actions. For example (build the mc module into the ModuleDIR directory):
+
+  chroot2pfs -o ModuleDIR --flist /tmp/module.list --command apt install mc
+
+  * **nspawn** — systemd-nspawn. Required both on the host and in the guest (i.e. inside the chroot). Useful for running graphical applications. For example:
+
+  chroot2pfs --nomod -X -c nspawn --mlist /pth/1.pfs,#2.pfs --command pcmanfm
+
+    * **--boot** — only for ''-c nspawn''. See ''systemd-nspawn -b''.
+    * **-X** — allow access to the current GUI session. For X11 it enables local access via ''xhost'' and forwards ''/tmp/.X11-unix''. For Wayland it forwards ''/run/user/$UID'' and the variables ''WAYLAND_DISPLAY'', ''XDG_RUNTIME_DIR'', ''XDG_SESSION_TYPE''. The key works for both ''chroot'' and ''nspawn''; ''nspawn'' is usually more convenient for GUI applications, but the blue shell-prompt highlight is not a feature of it.
+
+An interactive run without ''--command'' opens a shell inside the container. Inside ''chroot'' and ''nspawn'' the prompt gets a blue background so it is clear that commands run outside the host system. If you need plain non-interactive output, use ''--command true'' or a specific command.
+
+==== What can be used as AUFS/Overlay layers: ====
+
+  * **-m | --mask** — a regular expression (substituted into ''grep -E'') applied to the names of already-loaded modules. The host and guest system are the same one. Handy for building modules from packages.
+  * **--mlist** — a list of modules and folders, comma-separated. You can use ''#'' in the list to disable an entry. Example: ''--mlist 1.pfs,#2.pfs,3.pfs''. The host and guest system may differ.
+  * **--flist** — a list of modules and folders read from a file. You can use ''#'' in the file to disable an entry.
+  * **--bind** — mount directories into the chroot root. A list in the format <code>/SOURCE/DIR1::/TARGET/DIR1,/SOURCE/DIR2::/TARGET/DIR2</code>. Example (forward the current directory ''./'' with an ''.rpm'' package into the chroot and install it locally with all dependencies):
+
+  chroot2pfs --bind ./::/tmp/bind --command urpmi /tmp/bind/package.rpm
+
+==== Possible actions inside the chroot ====
+
+  * **--command** — a command (this parameter must be last on the line). For example: ''--command LANG=en_US.UTF-8 program''. Works only with ''-c chroot''.
+  * **--script** — a script that will be copied into the chroot and run there.
+
+==== Saving results ====
+
+  * **--nomod** — do not create a module from the changes.
+  * **--notrim** — do not remove obviously unnecessary files from the module (caches, etc.).
+  * **--wh** — do not remove special aufs files (whiteouts).
+  * **-f | --fast** — create the module with the fast compression type (lz4 instead of xz).
+  * **-n | -o | --name** — name of the directory **or** .pfs file to create (a file when the .pfs suffix is given).
+
+Exit codes: ''0'' — success; ''1'' — rebuild error or unsuitable module; ''2'' — error creating the overlay/AUFS root; ''3'' — root not mounted; ''4'' — layer not found; ''5'' — failed to add a layer; ''6'' — output file or directory already exists. Other non-zero codes are propagated from the command run inside the container.
+
+===== mkpfs =====
+
+Creates a **.pfs** from a directory (similar to ''mksquashfs''). It automatically creates the **//pfs.files//**, **//pfs.specs//**, and **//pfs.dirs.empty//** files (when the PFS contains empty directories).
+
+==== Usage: ====
+
+  * **mkpfs** — creates a **.pfs** from the current directory.
+  * **mkpfs /catalog** — creates a **.pfs** from the ''/catalog'' directory.
+  * **mkpfs -d /catalog** — creates a **composite .pfs** from the directories inside ''/catalog''.
+  * **mkpfs -m /catalog** — creates a **composite .pfs** from the **.pfs** files inside ''/catalog''. Nested directories are not traversed.
+  * **mkpfs /path/1.pfs /path2/2.pfs /path3/3.pfs -o contaner.pfs** — creates a **composite .pfs** named //contaner.pfs//.
+
+==== Options (keys): ====
+
+  * **-o** / **--out-file** — output **.pfs** file name (defaults to the name of the first source).
+  * **-n** / **--not-dirs-empty** — do not create the **//pfs.dirs.empty//** file.
+  * **-f** / **--fast** — fast compression (larger .pfs, but built faster).
+  * **-w** — include AUFS whiteouts in the module.
+  * **-l** / **--local** — build in place, without using AUFS or OverlayFS.
+  * **-no-progress** — do not show the progress line.
+  * **-d** / **--dir** — directories only.
+  * **---mklist** — add file lists to a non-composite module.pfs.
+  * **-m** / **--mod** — modules only.
+  * **-comp comp pars** — compression parameters for ''mksquashfs'' (must be last).
+
+:!: You can merge up to 126 **.pfs** files in a single pass (minus those already used by other loop devices). For larger counts, merge files in batches of 126.
+
+In v5 **mkpfs** accepts existing squashfs and erofs modules as input layers. The **mkpfs** output stays squashfs; to create erofs use **mkpfs-erofs**.
+
+**mkpfs** error codes: ''1'' — no input or empty source; ''2'' — unsupported source type or build error; ''5'' — failed to add a layer; ''6'' — output directory already exists.
+
+===== mkpfs-erofs =====
+
+:-D **New in v5.** Like **mkpfs**, but creates **erofs** variants of modules. Uses ''mkfs.erofs'' instead of ''mksquashfs''.
+
+  * Supports the main **mkpfs** options.
+  * Not all compression options match: erofs uses ''mkfs.erofs'' parameters, so port only the common **mkpfs** options and verify the result with **pfsinfo** / **fs_type**.
+
+===== mountfile =====
+
+A helper script; mounts modules.
+
+==== Usage: ====
+
+  * //mountfile file.pfs// (into ''/mnt/.+...'')
+  * ''mountfile file.pfs <mount point>''
+
+If no mount point is given, **mountfile** uses the standard ''prefixmp'' prefix from pfs-utils and creates a path like ''/mnt/.module_name''.
+
+===== pfs =====
+
+  * The function library for pfs-utils.
+  * The functions can be used separately in the console or in your own scripts.
+
+==== Usage: ====
+
+  * ''pfs <function> <pars>''
+  * <code>source /path/to/scripts/pfs ; <function> <pars></code>
+
+==== Functions (some): ====
+
+  * //exitmsg// — exit the script with a message and exit code
+  * //allow_only_root// — root check
+  * //mklist// — build a list of files and empty directories
+  * //checksfsxzb// — check the system for squashfs support
+  * //fs_type// — the filesystem type of a file (squashfs, erofs, ext2-4, etc.)
+  * //mkaufs// / **mkoverlay** — create the aufs/overlay used by the utilities
+  * //delaufs// / **rmoverlay** — remove the aufs/overlay
+  * //addlayer_dispatch// (v5) — internal routing of AUFS layers and the private OverlayFS namespace; it does not mean a system-wide hot-load on OverlayFS
+  * //mksqmod// — create a module (a wrapper around mksquashfs)
+  * //pfs_update_caches// — refresh caches after attach/detach
+  * //lsblocked// — show the list of modules that cannot be detached
+  * //detect_initrd// / //detect_layering_mode// (v5) — single-source detection of the runtime environment
+
+===== pfsload =====
+
+  * AUFS only: attaches a **.pfs** file to the root AUFS filesystem.
+  * AUFS only: hot attach/detach of modules to the system root is not supported on OverlayFS; for OverlayFS use ''pfsrun''.
+  * Any squashfs/erofs modules supported by the kernel can also be attached, as well as **Ext2/3/4** partitions and directories.
+
+==== Options (keys): ====
+
+  * **-r** / **--toram** — copy the module into tmpfs and mount it from there.
+  * **-u** / **--upper** — mount into the upper layer (default).
+  * **-l** / **--lower** — mount into the lower layer.
+  * **-n** / **--no-update** — do not refresh icon caches, etc.
+  * **--ro** / **--read-only** — mount read-only.
+
+==== Usage: ====
+
+  * **pfsload file.pfs** — a PFS module
+  * **pfsload file.img** — an image with a filesystem inside
+  * **pfsload dir** — a directory
+
+On OverlayFS ''pfsload'' does not perform a system-wide hot-load. To run an application with a module, use ''pfsrun''; ''pfsexec'' remains the low-level helper.
+
+===== pfsunload =====
+
+AUFS only: detaches a file from the root AUFS filesystem.
+
+==== Parameters and options ====
+
+  * **-n / --no-update** — do not refresh menu caches, etc.
+  * **-s / --saveram** — do not remove the module from RAM after detach (see ''pfsload -r'')
+
+==== Usage: ====
+
+  pfsunload /file.pfs
+
+If the module is in use by a process, detach may fail; first check busy files with **lsblocked** or close the application from that module.
+
+===== pfsuninstall =====
+
+Removes a PFS from the root filesystem.
+
+  * Files used by several PFS modules are not removed while at least one of those PFS modules is installed or attached.
+  * The inverse of //pfsextract -i module//.
+
+Installation metadata is stored in ''/var/lib/pfs-utils/install''; the legacy path ''/etc/packages/install'' is read for compatibility.
+
+===== pfsmigrate-install =====
+
+:-D **New in v5.** Helps migrate installations performed with pfs-utils v4 to the v5 metadata storage scheme.
+
+The migration moves records from the legacy ''/etc/packages/install'' to the FHS path ''/var/lib/pfs-utils/install'' without removing the installed files themselves.
+
+===== pfsfind =====
+
+Tells which attached or installed PFS a given file belongs to. A partial file name is allowed.
+
+==== Usage: ====
+
+  * **pfsfind filename** — find "filename", human-readable format
+  * **pfsfind filename --raw** — pipe-friendly format
+  * **pfsfind filename --raw '$n $module'** — only the needed fields (see ''--help'')
+
+**pfsfind** is useful before deleting a file: it shows which attached or installed module the file came from.
+
+===== pfsfindlibs =====
+
+:-D **New in v5.** Analyzes the ELF dependencies of modules and helps find missing shared libs.
+
+**pfsfindlibs** looks for missing ELF libraries inside an unpacked tree or a module and helps fill in ''pfs.depends''.
+
+===== pfsdepends =====
+
+:-D **New in v5.** Shows the module dependencies recorded in //pfs.depends// during the **mkpfs** build.
+
+==== Usage: ====
+
+  * **pfsdepends file.pfs** — show dependencies.
+
+If a dependency is already attached or installed, **pfsdepends** will not report it as missing.
+
+===== pfsinfo =====
+
+When run as //pfsinfo /file.pfs// it lists the PFS modules inside a composite .pfs.
+
+When run without parameters it lists all PFS modules in the system.
+
+==== Options (keys): ====
+
+  * **-m** / **--mount** — show only attached PFS modules.
+  * **-i** / **--install** — show only installed PFS modules.
+  * **--machine** (new in v5) — TSV output for scripts and GUIs (e.g. **modman**). ;-)
+
+The machine mode **pfsinfo --machine** is stable for GUIs/scripts: fields are tab-separated and locale-independent.
+
+===== pfsbench =====
+
+:-D **New in v5.** Benchmarks attach/detach speed and I/O throughput of squashfs vs erofs vs RAM variants. Useful for estimating the effect of //-r// / //--toram// on specific hardware.
+
+**pfsbench** compares normal loading, loading into RAM, and different formats on the current hardware; results cannot be carried between machines without re-measuring.
+
+===== pfsextract =====
+
+  * Splits a composite module (extracts individual PFS modules from a composite **.pfs**).
+  * A non-composite one — unpacks it.
+
+==== Usage: ====
+
+  * **pfsextract /file.pfs** — create the ''/file_pfs'' directory with the individual **.pfs** files from ''/file.pfs''. If ''/file.pfs'' is not composite — unpack into the ''./file'' directory.
+  * **pfsextract /file.pfs pack1 pack2** — extract only the pack1 and pack2 modules.
+  * **pfsextract -i /file.pfs pack1** — extract pack1 and install it into the system.
+
+==== Options (keys): ====
+
+  * **-no-progress** — do not show the progress line.
+  * **-f** / **--fast** — fast compression.
+  * **-d** / **--nopfs** — extract individual PFS modules as directories.
+  * **-i** / **--install** — unpack into the system ("install").
+  * **-o** / **--out-dir path/dir** — create the dir directory and unpack into it.
+  * **-comp comp pars** — compression parameters for ''mksquashfs''.
+  * **-q** — quiet.
+
+With ''-i'', **pfsextract** registers the installation in the pfs-utils registry so that **pfsuninstall** can correctly remove the files later.
+
+===== pfsrebuild =====
+
+AUFS only for the runtime root: build a new module from the file list of an already-attached AUFS module. On OverlayFS use the build/private-runtime paths rather than rebuilding from a hot-loaded root.
+
+  * Rebuilds a module from file lists. For the runtime-root path this is AUFS-only: it takes the files from the system where the module is already attached via AUFS.
+  * For example: the //mate.pfs// module is attached and you want to replace a couple of files in it or fix a config. You change them in the system, run //pfsrebuild mate// — and get the modified module in the current folder. :-)
+
+==== Usage: ====
+
+  pfsrebuild <PACKAGE> <args for mkpfs>
+
+:!: <del>Limited functionality, use only for modules with root-owned content (it changes folder ownership to root on its own).</del> In v5 the behavior has been rechecked; if you have problems — [[http://forum.puppyrus.org/index.php?topic=21704.msg157988#msg157988|report them]].
+
+**pfsrebuild** must be applied to a module that is already attached via AUFS or installed: it takes the current files from the running root and builds a new module alongside.
+
+OverlayFS does not support a system-wide hot-load root for this scenario; for OverlayFS use build paths like **mkpfs**/**chroot2pfs** or private execution via **pfsrun**.
+
+===== pfsactivate / pfsdeactivate =====
+
+An experimental activation model using symlink injection rather than an AUFS/OverlayFS layer. The method goes back to Porteus/Neko overlay activation: [[https://forum.porteus.org/viewtopic.php?t=9216|an activate/deactivate implementation for OverlayFS via ln -sf]], general context on Porteus modules: [[https://www.porteus.org/tutorials/36-modules/56-what-are-porteus-modules.html|What are Porteus Modules?]].
+
+**pfsactivate** loop-mounts the module read-only into ''/run/pfs-utils/symlink-activations/<module>/mount'', walks the files inside it and, for each ''/<rel>'', renames the existing host file to ''.pfs.org.<basename>'', then creates a symlink to the file from the mounted module. This works on any rootfs (AUFS, OverlayFS, ext4), but the symlink is visible via ''readlink'' and is not a kernel-level transparent layer.
+
+**pfsdeactivate** rolls the state back: it reads ''state'' in reverse order, removes only the symlinks pointing into the activation mount directory, restores the ''.pfs.org.*'' backups to their original places, unmounts the loop mount, and removes the state directory.
+
+Options: ''pfsactivate --list'' shows the activated modules and the number of files; ''--persist DIR'' on **pfsactivate** and **pfsdeactivate** sets an alternative state root instead of ''/run''. In ''changes='' mode persistence is dangerous: deactivate the module before reboot, otherwise you may leave broken symlinks.
+
+On an AUFS root, **pfsload** is better for ordinary attachment: it provides system-wide kernel-level behavior. On an OverlayFS root use **pfsrun** for runtime execution; **pfsexec** remains the low-level helper. **pfsactivate/pfsdeactivate** are meant as a temporary compatible fallback for environments where layered attachment is unavailable or undesirable.
+
+===== pfsexec / pfsrun =====
+
+Wrappers for running commands inside an environment that includes specific modules. **pfsexec** creates a private overlay namespace from one or more PFS modules and runs a command inside it. **pfsrun** is a convenient layer on top of **pfsexec** for launching applications, especially GUI ones.
+
+**pfsexec**:
+
+  * ''pfsexec MODULE.pfs COMMAND [ARGS...]'' — run a command with a module in an overlay namespace.
+  * ''pfsexec -m base.pfs -m app.pfs /bin/bash'' — attach several modules.
+  * ''--bind PATH'' — forward a host path into the namespace.
+  * ''--persist DIR'' — store the overlay ''upper''/''work'' in the given directory instead of tmpfs.
+
+**pfsrun**:
+
+  * ''pfsrun MODULE.pfs'' — try to find the main binary by the module name and run it.
+  * ''pfsrun MODULE.pfs --new-instance'' — pass arguments to the auto-detected binary.
+  * ''pfsrun --exec /opt/firefox/firefox firefox.pfs --new-instance'' — specify the binary explicitly.
+  * ''pfsrun --shell MODULE.pfs'' — open an interactive shell inside the namespace.
+  * ''--no-gui'' — do not forward the Wayland/X11 environment.
+  * ''--root'' — do not drop privileges to the user; useful for certain system GUI/CLI scenarios.
+
+For a GUI, **pfsrun** automatically forwards ''/run/user/$UID'', ''/tmp/.X11-unix'', ''DISPLAY'', ''WAYLAND_DISPLAY'', ''XDG_RUNTIME_DIR'', ''XDG_SESSION_TYPE'' and sets Wayland toolkit variables (e.g. ''GDK_BACKEND=wayland''). So for launching applications from ready-made modules **pfsrun** is usually preferable, while **chroot2pfs -X** is meant for the build-time chroot/nspawn scenario.
+
+===== trim-chroot =====
+
+:-D **New in v5.** Cleans the chroot environment of obviously unnecessary files (logs, runtime directories, package cache, mime/icon cache, etc.) before building a module. Used inside **chroot2pfs**, also available standalone.
+
+By default, after leaving the container **chroot2pfs** calls ''trim-chroot'' on the changes directory before creating the output directory or ''.pfs'' file. The ''--notrim'' option disables this pass and keeps logs/caches/runtime files in the result.
+
+===== selftest =====
+
+:-D **New in v5.** Integrity check of the pfs-utils pipeline: creates test modules, attaches, detaches, and verifies the dump.
+
+**selftest** must be run as root in a live environment: it creates temporary modules, attaches/detaches them, and checks chroot2pfs/pfsrun smoke scenarios.
+
+===== Legacy v4 siblings =====
+
+Kept for backward compatibility with scripts and builds written for v4:
+
+  * **pfs1**, **pfs-v4** — v4 variants of the function library.
+  * **pfsload-v4** — the v4 variant of **pfsload**.
+  * **pfsunload-v4** — the v4 variant of **pfsunload**.
+
+:?: If you do not need to support v4 scripts, use only the main utilities. The legacy commands are not developed and are needed only for compatibility with old builds.
+
+- ---
+
+====== Graphical interface (GUI) ======
+
+In v5 the recommended GUI is **[[https://github.com/sfs-pra/modman|modman]]** (GTK3). It is a lightweight C wrapper over the **modman** Bash CLI, which in turn talks to **pfs-utils** through the //--machine// TSV protocol. :-D
+
+==== modman ====
+
+  * Attach / detach / search modules with tabs (Attached / Internet / Local / System).
+  * Asynchronous operations with cancellation.
+  * Loading in **--upper**, **--lower**, **--toram** modes (chosen from a menu).
+  * Polkit integration for root operations without the CLI.
+  * Compact list mode for small displays.
+
+**modman.conf** sets download paths, runtime prefixes, and the load/unload commands; **modman** uses the machine-first output of pfs-utils and must not change the file layers directly.
+
+==== Old v4 wrappers (deprecated) ====
+
+  * <del>**open_pfs** — the main attach/detach/install script.</del> Replaced in **modman**.
+  * <del>**uninstall_pfs** — removal of selected PFS modules.</del> Replaced in **modman**.
+  * <del>**manager_pfs** — a list of all PFS modules in the system.</del> Replaced in **modman**.
+  * <del>**loader_fs** — attaching SFS and ext2/3/4 partitions.</del> :!: Not part of modern builds.
+  * <del>**editor_pfs** — a PFS editor (a GUI for pfsmerge).</del> :!: Its functionality has been incomplete for a while. [[http://forum.puppyrus.org/index.php?topic=21651.0|More]]
+  * <del>**extractor_pfs** — extracting modules from .pfs (a GUI for pfsextract).</del> Replaced in **modman**.
+
+- ---
+
+[[http://forum.puppyrus.org/index.php?board=172.0|Forum discussion]]. :-)

@@ -4,3 +4,7 @@ _wiki/
 
 # Locale build artifacts
 po/*.mo
+
+# Python bytecode cache
+__pycache__/
+*.pyc
