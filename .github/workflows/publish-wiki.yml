@@ -2,8 +2,8 @@
 #
 # Single source of truth: docs/*.dokuwiki. English pages are the default;
 # each has a Russian sibling (*.ru.dokuwiki). The workflow regenerates the
-# MediaWiki pages with docs/dokuwiki2mediawiki.py and mirrors them into the
-# wiki repo. Generated *.mediawiki files are build artifacts (git-ignored).
+# Markdown pages with docs/dokuwiki2markdown.py and mirrors them into the wiki
+# repo. Generated _wiki/*.md files are build artifacts (git-ignored).
 #
 # Page mapping:
 #   pfs-utils.dokuwiki            -> Home
@@ -22,7 +22,7 @@ on:
     branches: [master, main]
     paths:
       - "docs/*.dokuwiki"
-      - "docs/dokuwiki2mediawiki.py"
+      - "docs/dokuwiki2markdown.py"
       - ".github/workflows/publish-wiki.yml"
   workflow_dispatch:
 
@@ -40,9 +40,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Generate MediaWiki pages from DokuWiki sources
+      - name: Generate Markdown pages from DokuWiki sources
         run: |
-          python3 docs/dokuwiki2mediawiki.py --out-dir _wiki docs/*.dokuwiki
+          python3 docs/dokuwiki2markdown.py --out-dir _wiki docs/*.dokuwiki
 
       - name: Clone wiki repository
         run: |
@@ -54,18 +54,17 @@ jobs:
       - name: Sync generated pages into the wiki
         run: |
           shopt -s nullglob
-          for f in _wiki/*.mediawiki; do
-            base="$(basename "$f" .mediawiki)"
+          for f in _wiki/*.md; do
+            base="$(basename "$f" .md)"
             case "$base" in
               pfs-utils)    page="Home" ;;
               pfs-utils.ru) page="Home-ru" ;;
               *.ru)         page="${base%.ru}-ru" ;;
               *)            page="$base" ;;
             esac
-            # Gollum treats Page.md and Page.mediawiki as duplicates; keep only ours.
-            find wiki -maxdepth 1 -type f -name "${page}.*" ! -name "${page}.mediawiki" -delete
-            cp "$f" "wiki/${page}.mediawiki"
-            echo "synced $f -> ${page}.mediawiki"
+            find wiki -maxdepth 1 -type f -name "${page}.*" ! -name "${page}.md" -delete
+            cp "$f" "wiki/${page}.md"
+            echo "synced $f -> ${page}.md"
           done
 
       - name: Commit and push wiki changes

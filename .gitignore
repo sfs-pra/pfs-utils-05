@@ -1,5 +1,4 @@
-# Generated wiki pages (built from docs/*.dokuwiki by docs/dokuwiki2mediawiki.py)
-docs/*.mediawiki
+# Generated wiki pages (built from docs/*.dokuwiki by docs/dokuwiki2markdown.py)
 _wiki/
 
 # Locale build artifacts
