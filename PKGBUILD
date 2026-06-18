@@ -1,9 +1,9 @@
 # Maintainer: sfs <sfslinux@gmail.com>
 # shellcheck shell=sh
 
-pkgname=pfs-utils-cli
+pkgname=pfs-utils5
 pkgver=2026.04
-pkgrel=33
+pkgrel=34
 pkgdesc='Scripts collection to create, merge, extract and load/unload pfs modules. Ver. 3'
 arch=('any')
 url='http://wiki.puppyrus.org/puppyrus/pr218/pfs4'
@@ -32,9 +32,9 @@ optdepends=(
     'desktop-file-utils: pfsrun .desktop integration'
 )
 backup=('etc/pfs-utils.conf')
-conflicts=('pfs-utils-cli<2026.04')
-provides=('pfs-utils-cli')
-install=pfs-utils-cli.install
+conflicts=('pfs-utils' 'pfs-utils-cli')
+provides=("pfs-utils=$pkgver" "pfs-utils-cli=$pkgver")
+install=pfs-utils5.install
 source=()
 sha256sums=()
 

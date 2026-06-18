@@ -6,7 +6,7 @@
   * Version 5 builds on the 4.* line and keeps option-level backward compatibility, adding support for **OverlayFS** and **erofs** alongside the classic **AUFS** + **squashfs**.
   * The utilities are not self-contained — individual scripts are not guaranteed to work in isolation.
   * Every utility has a built-in ''--help'', and the main options and scenarios are described directly in this document below. :-D
-  * [[http://forum.puppyrus.org/index.php?board=176.0|Discussion]]
+  * [[https://forum.puppyrus.org/index.php?board=213.0|Discussion]]
   * [[https://github.com/sfs-pra/pfs-utils-05|Download]]
 
 ====== What's new in v5 ======
@@ -111,7 +111,7 @@ Typical ''aufs-n --raw'' output contains the layer number, source, and bundle pa
 
 Assembles several AUFS or **OverlayFS** layers into a new root and performs a [[https://wiki.archlinux.org/title/Chroot|chroot]] into it. Actions performed inside are saved on leaving the chroot (Ctrl+d or exit). :-)
 
-  * [[http://forum.puppyrus.org/index.php?topic=21158.0|Discussion]]
+  * [[https://forum.puppyrus.org/index.php?board=213.0|Discussion]]
   * **-h | --help** — built-in help
 
 :!: **Change in v5**: by default the result is written into a **directory** (NAME without the //.pfs// suffix). To get a **.pfs** file, add //.pfs// at the end of the name.
@@ -459,4 +459,4 @@ In v5 the recommended GUI is **[[https://github.com/sfs-pra/modman|modman]]** (G
 
 - ---
 
-[[http://forum.puppyrus.org/index.php?board=172.0|Forum discussion]]. :-)
+[[https://forum.puppyrus.org/index.php?board=213.0|Forum discussion]]. :-)

@@ -1,6 +1,6 @@
 # Maintainer: sfs <sfslinux@gmail.com>
-# VCS (git) build variant of pfs-utils-cli.
-# Builds pfs-utils-cli from the upstream git repository instead of the
+# VCS (git) build variant of pfs-utils5.
+# Builds pfs-utils5 from the upstream git repository instead of the
 # local working tree.
 #
 # Source repo: https://github.com/sfs-pra/pfs-utils-05
@@ -11,11 +11,11 @@
 # building in place from $startdir.
 # shellcheck shell=sh
 
-pkgname=pfs-utils-cli
+pkgname=pfs-utils5
 _gitname=pfs-utils-05
 _basever=2026.04
 pkgver=2026.04
-pkgrel=33
+pkgrel=34
 pkgdesc='Scripts collection to create, merge, extract and load/unload pfs modules. Ver. 3 (git)'
 arch=('any')
 url='https://github.com/sfs-pra/pfs-utils-05'
@@ -45,9 +45,9 @@ optdepends=(
     'desktop-file-utils: pfsrun .desktop integration'
 )
 backup=('etc/pfs-utils.conf')
-conflicts=('pfs-utils-cli<2026.04')
-provides=('pfs-utils-cli')
-install=pfs-utils-cli.install
+conflicts=('pfs-utils' 'pfs-utils-cli')
+provides=("pfs-utils=$pkgver" "pfs-utils-cli=$pkgver")
+install=pfs-utils5.install
 source=("${_gitname}::git+https://github.com/sfs-pra/pfs-utils-05.git")
 sha256sums=('SKIP')
 

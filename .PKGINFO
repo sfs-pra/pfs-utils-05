@@ -1,4 +1,4 @@
-pkgname = pfs-utils-cli
+pkgname = pfs-utils5
 pkgver = 2026.03-07
 pkgdesc = Scripts collection to create, merge, extract and load/unload pfs modules. Ver. 3
 url = http://wiki.puppyrus.org/puppyrus/pr218/pfs4
@@ -7,6 +7,10 @@ builddate = 1492610499
 packager = sfs
 size = 121856
 license = GPL
+provides = pfs-utils
+provides = pfs-utils-cli
+conflict = pfs-utils
+conflict = pfs-utils-cli
 depend = bash
 #depend = sudo
 depend = squashfs-tools

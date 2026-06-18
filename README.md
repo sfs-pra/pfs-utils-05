@@ -97,7 +97,7 @@ makepkg -si
 makepkg -p PKGBUILD.git -si
 ```
 
-This installs the `pfs-utils-cli` package.
+This installs the `pfs-utils5` package.
 
 ---
 
